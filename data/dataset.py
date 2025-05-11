@@ -54,7 +54,7 @@ class KittiSemSegDataset(Dataset):
         ])
         self.mask_transform  = T.Compose([
             T.Resize(target_size, interpolation=InterpolationMode.NEAREST),
-            T.ToTensor()
+            T.Lambda(lambda x: torch.from_numpy(np.array(x, dtype=np.uint8)))
         ])
 
     def __len__(self):
