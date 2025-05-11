@@ -1,0 +1,35 @@
+# VSCode configurations
+.vscode
+
+# Python cache
+**/__pycache__/
+
+# Virtual environment
+.venv
+
+# Reading material
+book
+papers
+
+# Output
+results
+
+# Model checkpoints
+checkpoints
+
+# Temporary dir
+tmp
+
+# Kitti helpers
+kitti
+
+# Redirected terminal output
+*.txt
+
+# logs
+logs
+
+# BoW vocabulary
+vocabulary
+
+**/.gitkeep
