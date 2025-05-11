@@ -26,6 +26,7 @@ LEARNING_RATE = 1e-4
 NUM_EPOCHS = 20
 IMAGE_SIZE = (375, 1242)
 
+checkpoint_path = "checkpoints/best_model.pth"
 
 def main():
     # Dataset and DataLoader
@@ -45,6 +46,11 @@ def main():
     model = DinoSeg(num_labels=NUM_CLASSES).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+
+    # Load the best model if it exists
+    if os.path.exists(checkpoint_path):
+        model.load_state_dict(torch.load(checkpoint_path))
+        print(f"Loaded model from {checkpoint_path}")
 
     # Metric: mean IoU over all classes (ignore_index for void if needed)
     miou_metric = JaccardIndex(
@@ -87,18 +93,18 @@ def main():
 
         with torch.no_grad():
             val_bar = tqdm(val_loader, desc=f"[Epoch {epoch}/{NUM_EPOCHS}]  Val")
-            for imgs, masks in val_bar:
-                imgs, masks = imgs.to(device), masks.to(device)
+            for batch_idx, (imgs, masks) in enumerate(val_bar, start=1):
+                imgs, masks = imgs.to(device), masks.to(device).squeeze(1)
 
-                outputs = model(imgs)
-                loss    = criterion(outputs.logits, masks.long())
+                outputs = model(imgs, original_size=IMAGE_SIZE)
+                loss    = criterion(outputs, masks.long())
                 running_val_loss += loss.item()
 
                 # compute IoU on this batch
-                preds = torch.argmax(outputs.logits, dim=1)  # [B, H, W]
+                preds = torch.argmax(outputs, dim=1)  # [B, H, W]
                 miou_metric.update(preds, masks)
 
-                val_bar.set_postfix(val_loss=running_val_loss / val_bar.n)
+                val_bar.set_postfix(val_loss=running_val_loss / batch_idx)
 
         avg_val_loss = running_val_loss / len(val_loader)
         avg_val_miou = miou_metric.compute().item()
@@ -115,7 +121,7 @@ def main():
         # save best
         if avg_val_miou > best_val_miou:
             best_val_miou = avg_val_miou
-            torch.save(model.state_dict(), "best_model.pth")
+            torch.save(model.state_dict(), checkpoint_path)
             print(f" → New best! Model saved (mIoU={best_val_miou:.4f})")
 
 if __name__ == "__main__":
