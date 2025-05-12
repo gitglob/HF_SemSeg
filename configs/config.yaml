@@ -1,6 +1,6 @@
 wandb:
     project: "HF_SemSeg"
-    run_name: "train_with_wandb"
+    run_name: ${checkpoint.model_name}
 
 dataset:
     root: "/home/panos/Documents/data/kitti/data_semantics/training"
@@ -15,8 +15,8 @@ train:
     num_epochs: 100
 
 model:
-    freeze_backbone: True
+    freeze_backbone: False
 
 checkpoint:
-    model_name: "base_model"
-    comment: "base model, frozen backbone, no augmentation"
+    model_name: "finetune_dino"
+    comment: "base model, un-frozen backbone, no augmentation"
