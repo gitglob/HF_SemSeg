@@ -1,4 +1,30 @@
+import os
 import torch
+
+
+def save_checkpoint(model, optimizer, epoch, best_val_miou, checkpoint_path):
+    """Save model, optimizer, epoch, and best_val_miou to a checkpoint."""
+    torch.save({
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "epoch": epoch,
+        "best_val_miou": best_val_miou
+    }, checkpoint_path)
+    print(f"Checkpoint saved at epoch {epoch} with mIoU={best_val_miou:.4f}")
+
+def load_checkpoint(model, optimizer, checkpoint_path):
+    """Load model, optimizer, epoch, and best_val_miou from a checkpoint."""
+    if os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        epoch = checkpoint["epoch"]
+        best_val_miou = checkpoint["best_val_miou"]
+        print(f"Checkpoint loaded: Resuming from epoch {epoch} with mIoU={best_val_miou:.4f}")
+        return epoch, best_val_miou
+    else:
+        print("No checkpoint found. Starting from scratch.")
+        return 0, 0.0
 
 def print_model_and_gpu_stats(model, device=torch.device('cuda:0')):
     # 1) Estimate model size on GPU (parameters only, in MB)

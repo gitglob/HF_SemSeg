@@ -29,7 +29,8 @@ kitti
 # logs
 logs
 
-# BoW vocabulary
-vocabulary
+# Wabdb
+wandb
+
 
 **/.gitkeep

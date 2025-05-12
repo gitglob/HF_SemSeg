@@ -23,7 +23,7 @@ class DinoSeg(nn.Module):
         processed_images = self.processor(images, return_tensors="pt").pixel_values
         return processed_images
 
-    def forward(self, images, original_size=None, return_pred=False):
+    def forward(self, images, original_size=None, return_attention=False):
         # preprocess
         if not torch.is_tensor(images):
             pixel_vals = self.processor(images, return_tensors="pt").pixel_values
@@ -37,8 +37,11 @@ class DinoSeg(nn.Module):
                 pixel_vals = images  # Assume [B, 3, H, W] already
 
         B, _, H, W = pixel_vals.shape
-        # backbone → [B, 1+N, C]
-        tokens = self.backbone(pixel_vals).last_hidden_state[:, 1:]
+
+        # backbone → [B, 1+N, C] and attention maps
+        backbone_output = self.backbone(pixel_vals, output_attentions=return_attention) # Attention is too memory intensive for my local GPU
+        tokens = backbone_output.last_hidden_state[:, 1:]  # Exclude the [CLS] token
+
         # reshape to [B, C, H/patch, W/patch]
         h, w = H // self.patch_size, W // self.patch_size
         feat = tokens.transpose(1,2).reshape(B, -1, h, w)
@@ -46,13 +49,11 @@ class DinoSeg(nn.Module):
         logits = self.classifier(feat)
         if original_size:
             logits = F.interpolate(logits, size=original_size, mode="bilinear", align_corners=False)
+    
+        if return_attention:
+            attentions = backbone_output.attentions  # List of attention maps from all layers
+            return logits, attentions
         
-        # 6) optionally return per-pixel preds
-        if return_pred:
-            # preds: [B, H_out, W_out] with the argmax class per pixel
-            preds = logits.argmax(dim=1)
-            return logits, preds
-
         return logits
 
     def load_pretrained_weights(self, weight_path):
