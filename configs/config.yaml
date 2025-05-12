@@ -10,12 +10,9 @@ dataset:
     num_classes: 35
 
 train:
-    batch_size: 2
+    batch_size: 1
     learning_rate: 1e-4
     num_epochs: 1000
 
 checkpoint:
     path: "checkpoints/model1.pth"
-
-visualization:
-    attention: False

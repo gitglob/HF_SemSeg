@@ -90,13 +90,15 @@ def main(cfg: DictConfig):
             for batch_idx, (imgs, masks) in enumerate(val_bar, start=1):
                 imgs, masks = imgs.to(device), masks.to(device).squeeze(1)
 
-                output = model(imgs, 
-                               original_size=IMAGE_SIZE, 
-                               return_attention=cfg.visualization.attention)
-                if cfg.visualization.attention:
+                # forward + loss
+                output = model(imgs, original_size=IMAGE_SIZE, 
+                               return_attention=batch_idx==1)
+                if batch_idx==1:
                     logits, attentions = output
+                    cls_map = get_cls_attention_map(attentions, cfg.dataset.H, cfg.dataset.W, model.patch_size)
                 else:
                     logits = output
+                    cls_map = None
                 loss = criterion(logits, masks.long())
                 running_val_loss += loss.item()
 
@@ -106,11 +108,6 @@ def main(cfg: DictConfig):
 
                 # Log plots for the first batch
                 if batch_idx == 1:
-                    cls_map = None
-                    if cfg.visualization.attention:
-                        # Visualize attention map (attentions: (num_attention_layers, batch_size, num_heads, seq_len, seq_len))
-                        cls_map = get_cls_attention_map(attentions, cfg, model.patch_size)
-
                     plot_image_and_masks(
                         imgs[0].permute(1, 2, 0).cpu().numpy(),  # Original image
                         masks[0].cpu().numpy(),                  # Ground truth
@@ -118,6 +115,8 @@ def main(cfg: DictConfig):
                         cls_map,                                 # Attention map
                         epoch
                     )
+                    del attentions
+                    torch.cuda.empty_cache()
 
                 val_bar.set_postfix(val_loss=running_val_loss / batch_idx)
 
@@ -146,6 +145,10 @@ def main(cfg: DictConfig):
             save_checkpoint(model, optimizer, epoch, best_val_miou, cfg.checkpoint.path)
 
 if __name__ == "__main__":
-    with initialize(config_path=f"../configs", job_name="train_and_log"):
+    with initialize(
+        version_base=None, 
+        config_path=f"../configs", 
+        job_name="train_and_log"
+    ):
         cfg = compose(config_name="config")
         main(cfg)

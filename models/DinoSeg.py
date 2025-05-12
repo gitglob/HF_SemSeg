@@ -10,7 +10,7 @@ class DinoSeg(nn.Module):
         BACKBONE_MODEL = "facebook/dinov2-small"
 
         # 1) backbone and its processor
-        self.backbone  = AutoModel.from_pretrained(BACKBONE_MODEL)
+        self.backbone  = AutoModel.from_pretrained(BACKBONE_MODEL, attn_implementation="eager")
         self.processor = AutoImageProcessor.from_pretrained(BACKBONE_MODEL, use_fast=False)
         # 2) head: 1×1 conv on the ViT feature map
         hidden_size    = self.backbone.config.hidden_size

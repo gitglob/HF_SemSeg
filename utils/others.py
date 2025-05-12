@@ -13,9 +13,11 @@ def get_cls_attention_map(attentions, H, W, patch_size):
     )                               # Reshape to the logit size (H/patch, W/patch)
     cls_map = cls_map.unsqueeze(0).unsqueeze(0)  # Add batch and channel dimension (1, 1, H/patch, W/patch)
     cls_map = F.interpolate(cls_map, size=(H, W), 
-                            mode="bilinear", align_corners=False) # Reshape to the original image size (H, W)
+                            mode="bilinear", align_corners=False) # Reshape to the original image size (1, 1, H, W)
     cls_map = cls_map.squeeze(0).squeeze(0)  # Remove batch and channel dimensions (H, W)
     cls_map = cls_map.detach().cpu().numpy()
+
+    return cls_map
 
 def save_checkpoint(model, optimizer, epoch, best_val_miou, checkpoint_path):
     """Save model, optimizer, epoch, and best_val_miou to a checkpoint."""
