@@ -1,6 +1,6 @@
 wandb:
     project: "HF_SemSeg"
-    run_name: "train_with_wandb"
+    run_name: ${checkpoint.model_name}
 
 dataset:
     root: "/home/panos/Documents/data/kitti/data_semantics/training"
