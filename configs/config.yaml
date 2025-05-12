@@ -12,7 +12,11 @@ dataset:
 train:
     batch_size: 1
     learning_rate: 1e-4
-    num_epochs: 1000
+    num_epochs: 100
+
+model:
+    freeze_backbone: True
 
 checkpoint:
-    path: "checkpoints/model1.pth"
+    model_name: "base_model"
+    comment: "base model, frozen backbone, no augmentation"

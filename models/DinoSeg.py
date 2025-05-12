@@ -5,7 +5,7 @@ from transformers import AutoModel, AutoImageProcessor
 
 
 class DinoSeg(nn.Module):
-    def __init__(self, num_labels=35):
+    def __init__(self, num_labels=35, freeze_backbone=False):
         super().__init__()
         BACKBONE_MODEL = "facebook/dinov2-small"
 
@@ -18,6 +18,11 @@ class DinoSeg(nn.Module):
         # patch grid size = image_size/patch_size, will infer in forward
         self.patch_size = self.backbone.config.patch_size
 
+        # Freeze backbone weights if specified
+        if freeze_backbone:
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+                
     def process(self, images):
         # Preprocess the images
         processed_images = self.processor(images, return_tensors="pt").pixel_values

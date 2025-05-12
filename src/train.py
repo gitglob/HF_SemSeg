@@ -21,7 +21,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
 # Hyperparameters
-BATCH_SIZE = 1
+BATCH_SIZE = 2
 LEARNING_RATE = 1e-4
 NUM_EPOCHS = 1000
 IMAGE_SIZE = (375, 1242)

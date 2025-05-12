@@ -19,8 +19,9 @@ def get_cls_attention_map(attentions, H, W, patch_size):
 
     return cls_map
 
-def save_checkpoint(model, optimizer, epoch, best_val_miou, checkpoint_path):
+def save_checkpoint(model, optimizer, epoch, best_val_miou, checkpoint_cfg):
     """Save model, optimizer, epoch, and best_val_miou to a checkpoint."""
+    checkpoint_path = f"checkpoints/" + checkpoint_cfg.model_name + ".pth"
     torch.save({
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
@@ -29,8 +30,9 @@ def save_checkpoint(model, optimizer, epoch, best_val_miou, checkpoint_path):
     }, checkpoint_path)
     print(f"Checkpoint saved at epoch {epoch} with mIoU={best_val_miou:.4f}")
 
-def load_checkpoint(model, optimizer, checkpoint_path):
+def load_checkpoint(model, optimizer, checkpoint_cfg):
     """Load model, optimizer, epoch, and best_val_miou from a checkpoint."""
+    checkpoint_path = f"checkpoints/" + checkpoint_cfg.model_name + ".pth"
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path)
         model.load_state_dict(checkpoint["model_state_dict"])

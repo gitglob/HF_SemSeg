@@ -20,8 +20,10 @@ from data.dataset import KittiSemSegDataset
 from utils.visualization import plot_image_and_masks
 from utils.others import save_checkpoint, load_checkpoint, get_cls_attention_map
 
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
+
 
 def main(cfg: DictConfig):
     # Initialize wandb
@@ -42,12 +44,16 @@ def main(cfg: DictConfig):
                             shuffle=False, num_workers=cfg.dataset.num_workers, pin_memory=True)
 
     # Initialize model, loss function, and optimizer
-    model = DinoSeg(num_labels=cfg.dataset.num_classes).to(device)
+    model = DinoSeg(
+        num_labels=cfg.dataset.num_classes, 
+        freeze_backbone=cfg.model.freeze_backbone
+    )
+    model = model.to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=cfg.train.learning_rate)
 
     # Load the best model if it exists
-    start_epoch, best_val_miou = load_checkpoint(model, optimizer, cfg.checkpoint.path)
+    start_epoch, best_val_miou = load_checkpoint(model, optimizer, cfg.checkpoint)
 
     # Metric: mean IoU over all classes
     miou_metric = JaccardIndex(
@@ -142,7 +148,7 @@ def main(cfg: DictConfig):
         # Save best model
         if avg_val_miou > best_val_miou:
             best_val_miou = avg_val_miou
-            save_checkpoint(model, optimizer, epoch, best_val_miou, cfg.checkpoint.path)
+            save_checkpoint(model, optimizer, epoch, best_val_miou, cfg.checkpoint)
 
 if __name__ == "__main__":
     with initialize(
