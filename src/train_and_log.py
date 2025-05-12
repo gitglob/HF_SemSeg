@@ -1,13 +1,14 @@
+import os
+import sys
 import torch
 import torch.optim as optim
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchmetrics import JaccardIndex
 from tqdm import tqdm
 import wandb
-import os
-import sys
+from hydra import initialize, compose
+from omegaconf import DictConfig, OmegaConf
 
 # Add the project root directory to the Python path
 cur_dir = os.path.dirname(os.path.abspath(__file__))
@@ -17,62 +18,51 @@ sys.path.append(str(project_root))
 from models.DinoSeg import DinoSeg
 from data.dataset import KittiSemSegDataset
 from utils.visualization import plot_image_and_masks
-from utils.others import save_checkpoint, load_checkpoint
+from utils.others import save_checkpoint, load_checkpoint, get_cls_attention_map
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
-# Hyperparameters
-BATCH_SIZE = 2
-LEARNING_RATE = 1e-4
-NUM_EPOCHS = 1000
-IMAGE_SIZE = (375, 1242)
-NUM_CLASSES = 35
-VIS_ATTENTION = False
-checkpoint_path = "checkpoints/model1.pth"
+def main(cfg: DictConfig):
+    # Initialize wandb
+    wandb.init(
+        project=cfg.wandb.project,
+        name=cfg.wandb.run_name,
+        config=OmegaConf.to_container(cfg, resolve=True),
+    )
+    IMAGE_SIZE = (cfg.dataset.H, cfg.dataset.W)
 
-# Initialize wandb
-wandb.init(project="HF_SemSeg", 
-           name="train_with_wandb", 
-           config={
-               "batch_size": BATCH_SIZE,
-               "learning_rate": LEARNING_RATE,
-               "num_epochs": NUM_EPOCHS,
-               "image_size": IMAGE_SIZE,
-               "num_classes": NUM_CLASSES
-               }
-)
-
-def main():
     # Dataset and DataLoader
     dataset_root = '/home/panos/Documents/data/kitti/data_semantics/training'
     train_dataset = KittiSemSegDataset(dataset_root, train=True, target_size=IMAGE_SIZE)
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=cfg.train.batch_size, 
+                              shuffle=True, num_workers=cfg.dataset.num_workers, pin_memory=True)
     val_dataset = KittiSemSegDataset(dataset_root, train=False, target_size=IMAGE_SIZE)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=cfg.train.batch_size, 
+                            shuffle=False, num_workers=cfg.dataset.num_workers, pin_memory=True)
 
     # Initialize model, loss function, and optimizer
-    model = DinoSeg(num_labels=NUM_CLASSES).to(device)
+    model = DinoSeg(num_labels=cfg.dataset.num_classes).to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optimizer = optim.Adam(model.parameters(), lr=cfg.train.learning_rate)
 
     # Load the best model if it exists
-    start_epoch, best_val_miou = load_checkpoint(model, optimizer, checkpoint_path)
+    start_epoch, best_val_miou = load_checkpoint(model, optimizer, cfg.checkpoint.path)
 
     # Metric: mean IoU over all classes
     miou_metric = JaccardIndex(
         task='multiclass',
-        num_classes=NUM_CLASSES,
+        num_classes=cfg.dataset.num_classes,
         average='macro',
         ignore_index=None
     ).to(device)
 
-    for epoch in range(start_epoch + 1, NUM_EPOCHS + 1):
+    for epoch in range(start_epoch + 1, cfg.train.num_epochs + 1):
         ####### TRAINING #######
         model.train()
         running_loss = 0.0
 
-        train_bar = tqdm(train_loader, desc=f"[Epoch {epoch}/{NUM_EPOCHS}] Train")
+        train_bar = tqdm(train_loader, desc=f"[Epoch {epoch}/{cfg.train.num_epochs}] Train")
         for batch_idx, (imgs, masks) in enumerate(train_bar, start=1):
             imgs, masks = imgs.to(device), masks.to(device).squeeze(1)  # [B, 1, H, W] -> [B, H, W]
 
@@ -96,12 +86,14 @@ def main():
         miou_metric.reset()
 
         with torch.no_grad():
-            val_bar = tqdm(val_loader, desc=f"[Epoch {epoch}/{NUM_EPOCHS}]  Val")
+            val_bar = tqdm(val_loader, desc=f"[Epoch {epoch}/{cfg.train.num_epochs}]  Val")
             for batch_idx, (imgs, masks) in enumerate(val_bar, start=1):
                 imgs, masks = imgs.to(device), masks.to(device).squeeze(1)
 
-                output = model(imgs, original_size=IMAGE_SIZE, return_attention=VIS_ATTENTION)
-                if VIS_ATTENTION:
+                output = model(imgs, 
+                               original_size=IMAGE_SIZE, 
+                               return_attention=cfg.visualization.attention)
+                if cfg.visualization.attention:
                     logits, attentions = output
                 else:
                     logits = output
@@ -115,16 +107,9 @@ def main():
                 # Log plots for the first batch
                 if batch_idx == 1:
                     cls_map = None
-                    if VIS_ATTENTION:
+                    if cfg.visualization.attention:
                         # Visualize attention map (attentions: (num_attention_layers, batch_size, num_heads, seq_len, seq_len))
-                        att = attentions[-1]            # Get the attention map from the last attention layer (batch_size, num_heads, seq_len, seq_len)
-                        att = att.mean(dim=1)           # Average over all attention heads (batch_size, seq_len, seq_len)
-                        cls_map = att[0, 0, 1:]         # Get the attention of the [CLS] token to all image patches for the first image (seq_len-1)
-                        cls_map = cls_map.reshape(IMAGE_SIZE[0] // model.patch_size, IMAGE_SIZE[1] // model.patch_size)  # Reshape to the logit size (H/patch, W/patch)
-                        cls_map = cls_map.unsqueeze(0).unsqueeze(0)  # Add batch and channel dimension (1, 1, H/patch, W/patch)
-                        cls_map = F.interpolate(cls_map, size=IMAGE_SIZE, mode="bilinear", align_corners=False) # Reshape to the original image size (H, W)
-                        cls_map = cls_map.squeeze(0).squeeze(0)  # Remove batch and channel dimensions (H, W)
-                        cls_map = cls_map.detach().cpu().numpy()
+                        cls_map = get_cls_attention_map(attentions, cfg, model.patch_size)
 
                     plot_image_and_masks(
                         imgs[0].permute(1, 2, 0).cpu().numpy(),  # Original image
@@ -158,7 +143,9 @@ def main():
         # Save best model
         if avg_val_miou > best_val_miou:
             best_val_miou = avg_val_miou
-            save_checkpoint(model, optimizer, epoch, best_val_miou, checkpoint_path)
+            save_checkpoint(model, optimizer, epoch, best_val_miou, cfg.checkpoint.path)
 
 if __name__ == "__main__":
-    main()
+    with initialize(config_path=f"../configs", job_name="train_and_log"):
+        cfg = compose(config_name="config")
+        main(cfg)

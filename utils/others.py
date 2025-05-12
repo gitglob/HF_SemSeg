@@ -1,6 +1,21 @@
 import os
 import torch
+import torch.nn.functional as F
 
+
+def get_cls_attention_map(attentions, H, W, patch_size):
+    att = attentions[-1]            # Get the attention map from the last attention layer (batch_size, num_heads, seq_len, seq_len)
+    att = att.mean(dim=1)           # Average over all attention heads (batch_size, seq_len, seq_len)
+    cls_map = att[0, 0, 1:]         # Get the attention of the [CLS] token to all image patches for the first image (seq_len-1)
+    cls_map = cls_map.reshape(
+        H // patch_size, 
+        W // patch_size
+    )                               # Reshape to the logit size (H/patch, W/patch)
+    cls_map = cls_map.unsqueeze(0).unsqueeze(0)  # Add batch and channel dimension (1, 1, H/patch, W/patch)
+    cls_map = F.interpolate(cls_map, size=(H, W), 
+                            mode="bilinear", align_corners=False) # Reshape to the original image size (H, W)
+    cls_map = cls_map.squeeze(0).squeeze(0)  # Remove batch and channel dimensions (H, W)
+    cls_map = cls_map.detach().cpu().numpy()
 
 def save_checkpoint(model, optimizer, epoch, best_val_miou, checkpoint_path):
     """Save model, optimizer, epoch, and best_val_miou to a checkpoint."""

@@ -1,0 +1,21 @@
+wandb:
+    project: "HF_SemSeg"
+    run_name: "train_with_wandb"
+
+dataset:
+    root: "/home/panos/Documents/data/kitti/data_semantics/training"
+    H: 375
+    W: 1242
+    num_workers: 4
+    num_classes: 35
+
+train:
+    batch_size: 2
+    learning_rate: 1e-4
+    num_epochs: 1000
+
+checkpoint:
+    path: "checkpoints/model1.pth"
+
+visualization:
+    attention: False
