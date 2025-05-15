@@ -1,4 +1,5 @@
 import os
+import cv2
 from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
@@ -7,6 +8,8 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 from torchvision.transforms import InterpolationMode
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 
 def get_sorted_file_list(folder):
@@ -24,9 +27,9 @@ class KittiSemSegDataset(Dataset):
         instance/        # instance masks (optional)
         semantic_rgb/    # colored labels (optional)
     """
-    def __init__(self, root_dir, image_folder='image_2', mask_folder='semantic', 
-                 train=True, target_size=(375,1242), 
-                 image_transform=None, mask_transform=None):
+    def __init__(self, root_dir, image_folder='image_2', mask_folder='semantic',
+                 train=True,
+                 transform=None):
         self.root_dir = root_dir
         self.image_dir = os.path.join(root_dir, image_folder)
         self.mask_dir = os.path.join(root_dir, mask_folder)
@@ -48,14 +51,7 @@ class KittiSemSegDataset(Dataset):
             self.masks  = all_masks[split_idx:]
 
         # transforms
-        self.image_transform = T.Compose([
-            T.Resize(target_size, interpolation=InterpolationMode.BILINEAR),
-            T.ToTensor()
-        ])
-        self.mask_transform  = T.Compose([
-            T.Resize(target_size, interpolation=InterpolationMode.NEAREST),
-            T.Lambda(lambda x: torch.from_numpy(np.array(x, dtype=np.uint8)))
-        ])
+        self.transform = transform
 
     def __len__(self):
         return len(self.images)
@@ -67,10 +63,11 @@ class KittiSemSegDataset(Dataset):
         image = Image.open(img_path).convert('RGB')
         mask = Image.open(mask_path)
 
-        if self.image_transform:
-            image = self.image_transform(image)
-        if self.mask_transform:
-            mask = self.mask_transform(mask)
+        image = np.array(image, dtype=np.uint8)
+        mask = np.array(mask, dtype=np.uint8)
+
+        augmented = self.transform(image=image, mask=mask)
+        image, mask = augmented['image'], augmented['mask']
 
         return image, mask
 
@@ -98,7 +95,13 @@ if __name__ == '__main__':
     print(f"Using device: {device}")
 
     dataset_root = '/home/panos/Documents/data/kitti/data_semantics/training'
-    dataset = KittiSemSegDataset(dataset_root, train=False)
+    transform = A.Compose([
+        A.Resize(height=375,
+                 width=1242,
+                 interpolation=cv2.INTER_LINEAR),
+        ToTensorV2()
+    ])
+    dataset = KittiSemSegDataset(dataset_root, train=False, transform=transform)
     loader = DataLoader(dataset, batch_size=8, shuffle=True, num_workers=4, pin_memory=True)
 
     for imgs, masks in loader:
@@ -106,6 +109,7 @@ if __name__ == '__main__':
         # Take the first image and mask from the batch
         img = imgs[0].permute(1, 2, 0).cpu().numpy()
         mask = masks[0].squeeze(0).cpu().numpy()
+        print(img.dtype, mask.dtype)
         
         # Denormalize and plot
         # img = denormalize_image(img)

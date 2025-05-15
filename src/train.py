@@ -1,6 +1,7 @@
 import torch
 import torch.optim as optim
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchmetrics import JaccardIndex
 from tqdm import tqdm
@@ -35,7 +36,7 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, 
                             shuffle=True, num_workers=4, 
                             pin_memory=True)
-    val_dataset = KittiSemSegDataset(dataset_root, train=True, target_size=IMAGE_SIZE)
+    val_dataset = KittiSemSegDataset(dataset_root, train=False, target_size=IMAGE_SIZE)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, 
                             shuffle=False, num_workers=4, pin_memory=True)
 
@@ -72,8 +73,9 @@ def main():
             imgs, masks = imgs.to(device), masks.to(device).squeeze(1)  # [B, 1, H, W] -> [B, H, W]
 
             # forward + loss
-            outputs = model(imgs, original_size=IMAGE_SIZE)
-            loss    = criterion(outputs, masks.long())
+            logits = model(imgs)
+            logits = F.interpolate(logits, size=IMAGE_SIZE, mode="bilinear", align_corners=False)
+            loss    = criterion(logits, masks.long())
 
             # backprop
             optimizer.zero_grad()
@@ -96,12 +98,13 @@ def main():
             for batch_idx, (imgs, masks) in enumerate(val_bar, start=1):
                 imgs, masks = imgs.to(device), masks.to(device).squeeze(1)
 
-                outputs = model(imgs, original_size=IMAGE_SIZE)
-                loss    = criterion(outputs, masks.long())
+                logits = model(imgs)
+                logits = F.interpolate(logits, size=IMAGE_SIZE, mode="bilinear", align_corners=False)
+                loss    = criterion(logits, masks.long())
                 running_val_loss += loss.item()
 
                 # compute IoU on this batch
-                preds = torch.argmax(outputs, dim=1)  # [B, H, W]
+                preds = torch.argmax(logits, dim=1)  # [B, H, W]
                 miou_metric.update(preds, masks)
 
                 val_bar.set_postfix(val_loss=running_val_loss / batch_idx)

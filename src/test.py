@@ -21,12 +21,12 @@ print(f"Using device: {device}")
 BATCH_SIZE = 1
 IMAGE_SIZE = (375, 1242)
 NUM_CLASSES = 35
-checkpoint_path = "checkpoints/best_model.pth"
+checkpoint_path = "checkpoints/base_model.pth"
 
 def main():
     # Dataset and DataLoader
     dataset_root = '/home/panos/Documents/data/kitti/data_semantics/training'
-    val_dataset = KittiSemSegDataset(dataset_root, train=True, target_size=IMAGE_SIZE)
+    val_dataset = KittiSemSegDataset(dataset_root, train=False, target_size=IMAGE_SIZE)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
 
     # Initialize model
