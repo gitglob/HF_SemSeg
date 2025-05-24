@@ -40,7 +40,7 @@ def load_checkpoint(model, optimizer, checkpoint_cfg, scheduler):
         checkpoint = torch.load(checkpoint_path)
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        # scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         epoch = checkpoint["epoch"]
         best_val_miou = checkpoint["best_val_miou"]
         print(f"Checkpoint loaded: Resuming from epoch {epoch} with mIoU={best_val_miou:.4f} and lr={scheduler.get_last_lr()[0]:.6f}")

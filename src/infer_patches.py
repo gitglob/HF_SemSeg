@@ -15,6 +15,7 @@ project_root = os.path.dirname(cur_dir)
 sys.path.append(str(project_root))
 
 from models.DinoSeg import DinoSeg
+from models.DinoSegUnet import DinoSegUnet
 from data.dataset import KittiSemSegDataset
 
 # Device configuration
@@ -25,13 +26,11 @@ print(f"Using device: {device}")
 BATCH_SIZE = 1
 PATCH_SIZE = (224, 224)  # Same as the patch size used during training
 IMAGE_SIZE = (375, 1242)
-NUM_CLASSES = 35
-checkpoint_path = "checkpoints/dinob_data_aug.pth"
+NUM_CLASSES = 33
+checkpoint_path = "checkpoints/dino-unet-kitti360-deep.pth"
 
 # Define deterministic transforms for validation
-transform = A.Compose([
-    ToTensorV2()
-])
+transform = A.Compose([ToTensorV2()])
 
 def infer_on_patches(model, image, patch_size, num_classes):
     """
@@ -102,21 +101,21 @@ def infer_on_patches(model, image, patch_size, num_classes):
     # average overlapping logits
     avg_logits = logits_full / count_mask
     full_pred = torch.argmax(avg_logits, dim=1).squeeze(0)
-    return full_pred, patches
+    return logits_full, full_pred, patches
 
 
 def main():
     # Dataset and DataLoader
-    dataset_root = '/home/panos/Documents/data/kitti/data_semantics/training'
+    dataset_root = '/home/panos/Documents/data/kitti-360'
     val_dataset = KittiSemSegDataset(dataset_root, train=False, transform=transform)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
 
     # Initialize model
     model_cfg = SimpleNamespace(
         backbone="facebook/dinov2-base",
         freeze_backbone=True
     )
-    model = DinoSeg(num_labels=NUM_CLASSES, model_cfg=model_cfg).to(device)
+    model = DinoSegUnet(num_labels=NUM_CLASSES, model_cfg=model_cfg).to(device)
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path)
         model.load_state_dict(checkpoint['model_state_dict'])
@@ -139,7 +138,8 @@ def main():
             imgs, masks = imgs.to(device), masks.to(device).squeeze(1)  # [B, 1, H, W] -> [B, H, W]
 
             # Perform inference on patches and merge results
-            preds, patches = infer_on_patches(model, imgs, PATCH_SIZE, NUM_CLASSES)
+            logits, preds, patches = infer_on_patches(model, imgs, PATCH_SIZE, NUM_CLASSES)
+            assert(masks.max() < logits.shape[1])
 
             # Compute mIoU for the current image
             miou_metric.reset()

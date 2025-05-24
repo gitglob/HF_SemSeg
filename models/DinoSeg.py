@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.init as init
@@ -126,7 +127,7 @@ def main():
     print(model.processor)
 
     print("~~~~~Model~~~~~")
-    print(summary(model, (3, 375, 1242), device="cpu"))
+    print(summary(model, (3, 375, 1242), device=device))
 
     print("~~~~~Inference~~~~~")
     images = torch.randn(8, 3, 512, 512) # Example batch of images

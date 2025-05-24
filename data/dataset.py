@@ -27,15 +27,17 @@ class KittiSemSegDataset(Dataset):
         instance/        # instance masks (optional)
         semantic_rgb/    # colored labels (optional)
     """
-    def __init__(self, root_dir, image_folder='image_2', mask_folder='semantic',
+    def __init__(self, root_dir, sequence="2013_05_28_drive_0000_sync",
                  train=True,
                  transform=None):
         self.root_dir = root_dir
-        self.image_dir = os.path.join(root_dir, image_folder)
-        self.mask_dir = os.path.join(root_dir, mask_folder)
 
-        all_images = get_sorted_file_list(self.image_dir)
-        all_masks  = get_sorted_file_list(self.mask_dir)
+        # Path to the match file
+        self.match_file = os.path.join(root_dir, "data_2d_semantics", "train", "0000.txt")
+
+        # Read the match file and extract image and mask paths
+        all_images, all_masks = self._read_match_file(self.match_file)
+
         assert len(all_images) == len(all_masks), (
             f"Images ({len(all_images)}) vs masks ({len(all_masks)}) mismatch"
         )
@@ -45,26 +47,61 @@ class KittiSemSegDataset(Dataset):
 
         if train:
             self.images = all_images[:split_idx]
-            self.masks  = all_masks[:split_idx]
+            self.masks = all_masks[:split_idx]
         else:
             self.images = all_images[split_idx:]
-            self.masks  = all_masks[split_idx:]
+            self.masks = all_masks[split_idx:]
 
-        # transforms
+        # Transforms
         self.transform = transform
 
+        # Map original class IDs to new class IDs
+        self.classes = [0, 6, 7, 8, 9, 10,
+                        11, 12, 13, 17, 19,
+                        20, 21, 22, 23, 26, 24, 25, 27, 28,
+                        30, 32, 33, 34, 35, 36, 37, 38, 39, 
+                        40, 41, 42, 44]
+        self.class_mapping = {}
+        for i in range(len(self.classes)):
+            self.class_mapping[self.classes[i]] = i
+
+    def _read_match_file(self, match_file):
+        """
+        Reads the match file and extracts image and mask paths.
+
+        Args:
+            match_file (str): Path to the match file.
+
+        Returns:
+            tuple: Two lists containing full paths to images and masks.
+        """
+        all_images = []
+        all_masks = []
+
+        with open(match_file, "r") as f:
+            for line in f:
+                image_path, mask_path = line.strip().split()
+                all_images.append(os.path.join(self.root_dir, image_path))
+                all_masks.append(os.path.join(self.root_dir, mask_path))
+
+        return all_images, all_masks
+    
     def __len__(self):
         return len(self.images)
 
     def __getitem__(self, idx):
-        img_path = os.path.join(self.image_dir, self.images[idx])
-        mask_path = os.path.join(self.mask_dir, self.masks[idx])
+        img_path = self.images[idx]
+        mask_path = self.masks[idx]
 
         image = Image.open(img_path).convert('RGB')
         mask = Image.open(mask_path)
 
         image = np.array(image, dtype=np.uint8)
         mask = np.array(mask, dtype=np.uint8)
+        for cid in np.unique(mask):
+            if cid not in self.class_mapping:
+                print(f"Warning: Class {cid} not in mapping.")
+        mask = np.vectorize(self.class_mapping.get)(mask).astype(np.uint8)
 
         augmented = self.transform(image=image, mask=mask)
         image, mask = augmented['image'], augmented['mask']
