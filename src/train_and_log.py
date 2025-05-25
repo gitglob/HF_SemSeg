@@ -105,6 +105,8 @@ def main(cfg: DictConfig):
     val_dataset = KittiSemSegDataset(dataset_root, train=False, transform=val_transform)
     val_loader = DataLoader(val_dataset, batch_size=cfg.train.batch_size,
                             shuffle=False, num_workers=cfg.dataset.num_workers, pin_memory=True)
+    print(f"Train dataset size: {len(train_dataset)}")
+    print(f"Validation dataset size: {len(val_dataset)}")
 
     # Initialize model, loss function, and optimizer
     model = DinoSeg(
@@ -138,39 +140,60 @@ def main(cfg: DictConfig):
     for epoch in range(1, cfg.train.num_epochs + 1):
         ####### TRAINING #######
         model.train()
-        running_loss = 0.0
+        running_loss = running_main_loss = running_aux_loss = 0.0
         miou_metric.reset()
 
-        train_bar = tqdm(train_loader, desc=f"[Epoch {epoch}/{cfg.train.num_epochs}] Train")
-        for batch_idx, (imgs, masks) in enumerate(train_bar, start=1):
-            imgs, masks = imgs.to(device), masks.squeeze(1).to(device)  # [B, 1, H, W] -> [B, H, W]
+        # Create a fixed‐length iterator over your loader
+        train_iter = iter(train_loader)
+        train_bar  = tqdm(range(cfg.train.epoch_size), desc=f"[Epoch {epoch}] Train")
 
-            # zero grads up front
-            optimizer.zero_grad()
+        for step in train_bar:
+            batch_idx = step + 1
+            try:
+                imgs, masks = next(train_iter)
+            except StopIteration:
+                # if you run out of data, re‐start the iterator
+                train_iter = iter(train_loader)
+                imgs, masks = next(train_iter)
+            imgs, masks = imgs.to(device), masks.squeeze(1).to(device)  # [B, 1, H, W] -> [B, H, W]
 
             # forward + loss
             with autocast(device_type="cuda"):
-                logits = model(imgs)
-                loss = criterion(logits, masks.long())
+                logits, aux_logits = model(imgs)
+                loss_main = criterion(logits, masks.long())
+                loss_aux = sum(criterion(aux, masks.long()) for aux in aux_logits) * cfg.model.deepsup_weight
+                loss = loss_main + loss_aux
+
+                # scale the loss down so that gradients accumulate correctly
+                loss = loss / cfg.train.accum_steps
 
             # compute IoU on this batch
             preds = torch.argmax(logits, dim=1)  # [B, H, W]
             miou_metric.update(preds, masks)
 
-            # backprop with mixed precision training
+            # Compute gradients but don't step the optimizer yet
             scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
 
-            running_loss += loss.item()
+            # every accum_steps, step & zero_grad
+            if batch_idx % cfg.train.accum_steps == 0:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+
+            # accumulate losses
+            running_main_loss += loss_main.item()
+            running_aux_loss += loss_aux.item()
+            running_loss += (loss_main.item() + loss_aux.item())
             train_bar.set_postfix(loss=running_loss / batch_idx)
 
+        avg_train_main_loss = running_main_loss / len(train_loader)
+        avg_train_aux_loss = running_aux_loss / len(train_loader)
         avg_train_loss = running_loss / len(train_loader)
         avg_train_miou = miou_metric.compute().item()
 
         ####### VALIDATION #######
         model.eval()
-        running_val_loss = 0.0
+        running_val_main_loss = running_val_aux_loss = running_val_loss = 0.0
         miou_metric.reset()
 
         # Prepare lists for storing predictions and targets for confusion matrix
@@ -184,16 +207,18 @@ def main(cfg: DictConfig):
                 imgs, masks = imgs.to(device), masks.to(device).squeeze(1)
 
                 # forward + loss
-                return_attention = batch_idx == 1 and cfg.visualization.attention
                 with autocast(device_type="cuda"):
-                    output = model(imgs, return_attention=return_attention)
-                    if return_attention:
-                        logits, attentions = output
-                        cls_map = get_cls_attention_map(attentions, cfg.dataset.H, cfg.dataset.W, model.patch_size)
-                    else:
-                        logits = output
-                        cls_map = None
-                    loss = criterion(logits, masks.long())
+                    output = model(imgs)
+                    logits, aux_logits = output
+                    cls_map = None
+
+                    loss_main = criterion(logits, masks.long())
+                    loss_aux = sum(criterion(aux, masks.long()) for aux in aux_logits) * cfg.model.deepsup_weight
+                    loss = loss_main + loss_aux
+
+                # accumulate losses
+                running_val_main_loss += loss_main.item()
+                running_val_aux_loss += loss_aux.item()
                 running_val_loss += loss.item()
 
                 # compute IoU on this batch
@@ -223,6 +248,8 @@ def main(cfg: DictConfig):
 
                 val_bar.set_postfix(val_loss=running_val_loss / batch_idx)
 
+        avg_val_main_loss = running_val_main_loss / len(val_loader)
+        avg_val_aux_loss = running_val_aux_loss / len(val_loader)
         avg_val_loss = running_val_loss / len(val_loader)
         avg_val_miou = miou_metric.compute().item()
 
@@ -243,10 +270,15 @@ def main(cfg: DictConfig):
 
             # Log metrics
             wandb.log({
+                "Train main Loss": avg_train_main_loss,
+                "Train aux Loss": avg_train_aux_loss,
                 "Train Loss": avg_train_loss,
                 "Train mIoU": avg_train_miou,
+                "Validation main Loss": avg_val_main_loss,
+                "Validation aux Loss": avg_val_aux_loss,
                 "Validation Loss": avg_val_loss,
                 "Validation mIoU": avg_val_miou,
+                "Validation Confusion Matrix": confmat,
                 "Epoch": epoch,
                 "Learning Rate": optimizer.param_groups[0]['lr']
             })

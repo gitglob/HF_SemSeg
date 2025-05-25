@@ -15,7 +15,9 @@ augmentation:
     crop_width: 840  # divisible by 14
 
 train:
-    batch_size: 8
+    epoch_size: 200
+    accum_steps: 8
+    batch_size: 4
     learning_rate: 1e-3
     num_epochs: 20
 
@@ -24,9 +26,11 @@ model:
     freeze_backbone: True
     patch_size: 14
     decoder_channels: 256
+    deepsup_layers: [3, 6, 9]
+    deepsup_weight: 0.4
 
 checkpoint:
-    model_name: "dino-unet-256-hd-crop"
+    model_name: "dino-unet-256-crop-mp-deepsup"
     comment: "base model, frozen backbone, augmentation"
 
 visualization:

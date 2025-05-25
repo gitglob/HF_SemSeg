@@ -42,8 +42,8 @@ class KittiSemSegDataset(Dataset):
             f"Images ({len(all_images)}) vs masks ({len(all_masks)}) mismatch"
         )
 
-        # 80/20 split idx
-        split_idx = int(0.8 * len(all_images))
+        # 95/5 split idx
+        split_idx = int(0.95 * len(all_images))
 
         if train:
             self.images = all_images[:split_idx]

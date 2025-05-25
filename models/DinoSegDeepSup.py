@@ -8,12 +8,12 @@ from transformers import AutoModel, AutoImageProcessor
 
 
 class DeepSupervisionHead(nn.Module):
-    def __init__(self, in_channels, skip_channels, decoder_channels, n_classes):
+    def __init__(self, in_channels, skip_channels, decoder_channels, n_classes, gn_groups=32):
         super().__init__()
         # Bottleneck
         self.bottleneck = nn.Sequential(
             nn.Conv2d(in_channels, decoder_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(decoder_channels),
+            nn.GroupNorm(gn_groups, decoder_channels),
             nn.ReLU(inplace=True),
             nn.Dropout2d(0.1)
         )
@@ -21,7 +21,7 @@ class DeepSupervisionHead(nn.Module):
         self.proj = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(c, decoder_channels, kernel_size=1),
-                nn.BatchNorm2d(decoder_channels),
+                nn.GroupNorm(gn_groups, decoder_channels),
                 nn.ReLU(inplace=True),
                 nn.Dropout2d(0.1)
             )
@@ -31,11 +31,11 @@ class DeepSupervisionHead(nn.Module):
         self.refines = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(decoder_channels, decoder_channels, kernel_size=3, padding=1),
-                nn.BatchNorm2d(decoder_channels),
+                nn.GroupNorm(gn_groups, decoder_channels),
                 nn.ReLU(inplace=True),
                 nn.Dropout2d(0.1),
                 nn.Conv2d(decoder_channels, decoder_channels, kernel_size=3, padding=1),
-                nn.BatchNorm2d(decoder_channels),
+                nn.GroupNorm(gn_groups, decoder_channels),
                 nn.ReLU(inplace=True),
                 nn.Dropout2d(0.1)
             )
