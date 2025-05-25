@@ -5,6 +5,8 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import torch.nn as nn
+import bitsandbytes as bnb
+from torch.amp import autocast, GradScaler
 from torchmetrics import JaccardIndex
 from tqdm import tqdm
 import albumentations as A
@@ -111,7 +113,11 @@ def main(cfg: DictConfig):
     model = model.to(device)
     criterion = CombinedLoss(alpha=0.8, ignore_index=255)
     # criterion = nn.CrossEntropyLoss(ignore_index=255)
-    optimizer = optim.Adam(model.parameters(), lr=cfg.train.learning_rate)
+    # optimizer = optim.Adam(model.parameters(), lr=cfg.train.learning_rate)
+    optimizer = bnb.optim.Adam8bit(model.parameters(), lr=cfg.train.learning_rate)  # Use 8-bit Adam optimizer if specified
+
+    # Initialize scaler for mixed precision training
+    scaler = GradScaler()
 
     # Metric: mean IoU over all classes
     miou_metric = JaccardIndex(
@@ -138,18 +144,22 @@ def main(cfg: DictConfig):
         for batch_idx, (imgs, masks) in enumerate(train_bar, start=1):
             imgs, masks = imgs.to(device), masks.squeeze(1).to(device)  # [B, 1, H, W] -> [B, H, W]
 
+            # zero grads up front
+            optimizer.zero_grad()
+
             # forward + loss
-            logits = model(imgs)
-            loss = criterion(logits, masks.long())
+            with autocast(device_type="cuda"):
+                logits = model(imgs)
+                loss = criterion(logits, masks.long())
 
             # compute IoU on this batch
             preds = torch.argmax(logits, dim=1)  # [B, H, W]
             miou_metric.update(preds, masks)
 
-            # backprop
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            # backprop with mixed precision training
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             running_loss += loss.item()
             train_bar.set_postfix(loss=running_loss / batch_idx)
@@ -174,14 +184,15 @@ def main(cfg: DictConfig):
 
                 # forward + loss
                 return_attention = batch_idx == 1 and cfg.visualization.attention
-                output = model(imgs, return_attention=return_attention)
-                if return_attention:
-                    logits, attentions = output
-                    cls_map = get_cls_attention_map(attentions, cfg.dataset.H, cfg.dataset.W, model.patch_size)
-                else:
-                    logits = output
-                    cls_map = None
-                loss = criterion(logits, masks.long())
+                with autocast(device_type="cuda"):
+                    output = model(imgs, return_attention=return_attention)
+                    if return_attention:
+                        logits, attentions = output
+                        cls_map = get_cls_attention_map(attentions, cfg.dataset.H, cfg.dataset.W, model.patch_size)
+                    else:
+                        logits = output
+                        cls_map = None
+                    loss = criterion(logits, masks.long())
                 running_val_loss += loss.item()
 
                 # compute IoU on this batch
