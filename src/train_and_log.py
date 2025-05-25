@@ -21,8 +21,9 @@ project_root = os.path.dirname(cur_dir)
 sys.path.append(str(project_root))
 
 # from models.DinoSeg import DinoSeg
-from models.DinoSegUnet import DinoSegUnet
-# from models.Seg2Former import Seg2Former
+# from models.DinoSegUnet import DinoSegUnet as DinoSeg
+# from models.Seg2Former import Seg2Former as DinoSeg
+from models.DinoSegDeepSup import DinoSegDeepSup as DinoSeg
 from models.tools import CombinedLoss
 from data.dataset import KittiSemSegDataset
 from utils.visualization import plot_image_and_masks
@@ -106,7 +107,7 @@ def main(cfg: DictConfig):
                             shuffle=False, num_workers=cfg.dataset.num_workers, pin_memory=True)
 
     # Initialize model, loss function, and optimizer
-    model = DinoSegUnet(
+    model = DinoSeg(
         num_labels=cfg.dataset.num_classes,
         model_cfg=cfg.model
     )
