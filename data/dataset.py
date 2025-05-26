@@ -11,6 +11,7 @@ from torchvision.transforms import InterpolationMode
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
+from .labels_kitti360 import id2label
 
 def get_sorted_file_list(folder):
     files = [f for f in os.listdir(folder) if f.endswith('.png')]
@@ -29,7 +30,8 @@ class KittiSemSegDataset(Dataset):
     """
     def __init__(self, root_dir, sequence="2013_05_28_drive_0000_sync",
                  train=True,
-                 transform=None):
+                 transform=None,
+                 debug=False):
         self.root_dir = root_dir
 
         # Path to the match file
@@ -38,12 +40,19 @@ class KittiSemSegDataset(Dataset):
         # Read the match file and extract image and mask paths
         all_images, all_masks = self._read_match_file(self.match_file)
 
+        # If in debug mode, only keep a random 10% of the dataset
+        if debug:
+            np.random.seed(42)
+            indices = np.random.choice(len(all_images), size=int(0.1 * len(all_images)), replace=False)
+            all_images = [all_images[i] for i in indices]
+            all_masks = [all_masks[i] for i in indices]
+
         assert len(all_images) == len(all_masks), (
             f"Images ({len(all_images)}) vs masks ({len(all_masks)}) mismatch"
         )
 
-        # 95/5 split idx
-        split_idx = int(0.95 * len(all_images))
+        # 90/10 split idx
+        split_idx = int(0.9 * len(all_images))
 
         if train:
             self.images = all_images[:split_idx]
@@ -52,18 +61,20 @@ class KittiSemSegDataset(Dataset):
             self.images = all_images[split_idx:]
             self.masks = all_masks[split_idx:]
 
+        # Build a lookup table for mapping IDs to trainIds
+        self.lut = np.ones(256, dtype=np.uint8)*155  # 256 for all possible uint8 values
+        for k, v in id2label.items():
+            self.lut[k] = v.trainId
+        # Ensure that the values of the lookup table are in perfect ascending order 0,1,2,3... except for 255 which is ignored
+        self.unique_mask_values = np.unique(self.lut)
+        f1 = self.unique_mask_values != 255
+        f2 = self.unique_mask_values != 155
+        self.unique_mask_values = self.unique_mask_values[f1 & f2]  # Ignore 255 and 155
+        if not np.array_equal(self.unique_mask_values, np.arange(len(self.unique_mask_values))):
+            raise ValueError("TrainIds are not in perfect ascending order.")
+
         # Transforms
         self.transform = transform
-
-        # Map original class IDs to new class IDs
-        self.classes = [0, 6, 7, 8, 9, 10,
-                        11, 12, 13, 17, 19,
-                        20, 21, 22, 23, 26, 24, 25, 27, 28,
-                        30, 32, 33, 34, 35, 36, 37, 38, 39, 
-                        40, 41, 42, 44]
-        self.class_mapping = {}
-        for i in range(len(self.classes)):
-            self.class_mapping[self.classes[i]] = i
 
     def _read_match_file(self, match_file):
         """
@@ -96,17 +107,20 @@ class KittiSemSegDataset(Dataset):
         image = Image.open(img_path).convert('RGB')
         mask = Image.open(mask_path)
 
+        # Convert image and mask to [0, 255] uint8 numpy arrays
         image = np.array(image, dtype=np.uint8)
         mask = np.array(mask, dtype=np.uint8)
-        for cid in np.unique(mask):
-            if cid not in self.class_mapping:
-                print(f"Warning: Class {cid} not in mapping.")
-        mask = np.vectorize(self.class_mapping.get)(mask).astype(np.uint8)
 
-        augmented = self.transform(image=image, mask=mask)
-        image, mask = augmented['image'], augmented['mask']
+        # Use the lookup table to map the mask in a vectorized way
+        train_mask = self.lut[mask] # ID -> trainId
+        # Assert that no value is outside the unique mask values
+        if np.any(train_mask == 155):
+            raise ValueError("Found an invalid mask (mapping: 155).")
 
-        return image, mask
+        augmented = self.transform(image=image, mask=train_mask)
+        image, train_mask = augmented['image'], augmented['mask']
+
+        return image, train_mask
 
 def plot_sample(img, mask):
     """Create a plot with image and mask side by side."""

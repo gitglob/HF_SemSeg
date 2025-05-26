@@ -12,14 +12,14 @@ dataset:
 
 augmentation:
     crop_height: 280 # divisible by 14
-    crop_width: 840  # divisible by 14
+    crop_width: 420  # divisible by 14
 
 train:
-    epoch_size: 200
-    accum_steps: 8
-    batch_size: 4
+    epoch_size: 200 # number of batches per epoch
+    accum_steps: 8 # number of batches per gradient accumulation step
+    batch_size: 4  # number of images per batch
     learning_rate: 1e-3
-    num_epochs: 20
+    num_epochs: 100
 
 model:
     backbone: "facebook/dinov2-base"  # small | base | large
@@ -30,7 +30,7 @@ model:
     deepsup_weight: 0.4
 
 checkpoint:
-    model_name: "dino-unet-256-crop-mp-deepsup"
+    model_name: "dino-unet-256-heavy_crop-mp-deepsup"
     comment: "base model, frozen backbone, augmentation"
 
 visualization:
