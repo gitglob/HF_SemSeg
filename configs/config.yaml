@@ -1,5 +1,5 @@
 wandb:
-    enabled: True
+    enabled: False
     project: "HF_SemSeg"
     run_name: ${checkpoint.model_name}
 
@@ -11,8 +11,8 @@ dataset:
     num_classes: 33
 
 augmentation:
-    crop_height: 280 # divisible by 14
-    crop_width: 420  # divisible by 14
+    crop_height: 320
+    crop_width: 1024
 
 train:
     epoch_size: 200 # number of batches per epoch
@@ -25,12 +25,13 @@ model:
     backbone: "facebook/dinov2-base"  # small | base | large
     freeze_backbone: True
     patch_size: 14
+    hidden_size: 128
     decoder_channels: 256
     deepsup_layers: [3, 6, 9]
     deepsup_weight: 0.4
 
 checkpoint:
-    model_name: "dino-unet-256-heavy_crop-mp-deepsup"
+    model_name: "mask2former"
     comment: "base model, frozen backbone, augmentation"
 
 visualization:

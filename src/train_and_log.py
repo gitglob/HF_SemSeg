@@ -22,8 +22,8 @@ sys.path.append(str(project_root))
 
 # from models.DinoSeg import DinoSeg
 # from models.DinoSegUnet import DinoSegUnet as DinoSeg
-# from models.Seg2Former import Seg2Former as DinoSeg
-from models.DinoSegDeepSup import DinoSegDeepSup as DinoSeg
+from models.Seg2Former import Seg2Former as DinoSeg
+# from models.DinoSegDeepSup import DinoSegDeepSup as DinoSeg
 from models.tools import CombinedLoss
 from data.dataset import KittiSemSegDataset
 from utils.visualization import plot_image_and_masks
@@ -139,7 +139,7 @@ def main(cfg: DictConfig):
         model.train()
         optimizer.zero_grad()
         miou_metric.reset()
-        running_loss = running_main_loss = running_aux_loss = 0.0
+        running_train_loss = 0.0
 
         # Iterate over the training dataset
         train_bar = tqdm(train_loader, desc=f"[Epoch {epoch}] Train")
@@ -147,11 +147,8 @@ def main(cfg: DictConfig):
             imgs, masks = imgs.to(device), masks.squeeze(1).to(device)  # [B, 1, H, W] -> [B, H, W]
 
             # forward + loss
-            logits, aux_logits = model(imgs)
-            # Check if there are any NaNs in the logits or aux_logits
-            loss_main = criterion(logits, masks.long())
-            loss_aux = sum(criterion(aux, masks.long()) for aux in aux_logits) * cfg.model.deepsup_weight
-            loss = loss_main + loss_aux
+            logits = model(imgs)
+            loss = criterion(logits, masks.long())
 
             # scale the loss down so that gradients accumulate correctly
             loss = loss / cfg.train.accum_steps
@@ -169,19 +166,15 @@ def main(cfg: DictConfig):
                 optimizer.zero_grad()
 
             # accumulate losses
-            running_main_loss += loss_main.item()
-            running_aux_loss += loss_aux.item()
-            running_loss += (loss_main.item() + loss_aux.item())
-            train_bar.set_postfix(loss=running_loss / batch_idx)
+            running_train_loss += loss.item()
+            train_bar.set_postfix(loss=running_train_loss / batch_idx)
 
-        avg_train_main_loss = running_main_loss / len(train_loader)
-        avg_train_aux_loss = running_aux_loss / len(train_loader)
-        avg_train_loss = running_loss / len(train_loader)
+        avg_train_loss = running_train_loss / len(train_loader)
         avg_train_miou = miou_metric.compute().item()
 
         ####### VALIDATION #######
         model.eval()
-        running_val_main_loss = running_val_aux_loss = running_val_loss = 0.0
+        running_val_loss = 0.0
         miou_metric.reset()
 
         # Prepare lists for storing predictions and targets for confusion matrix
@@ -196,16 +189,10 @@ def main(cfg: DictConfig):
 
                 # forward + loss
                 output = model(imgs)
-                logits, aux_logits = output
+                logits = output
                 cls_map = None
 
-                loss_main = criterion(logits, masks.long())
-                loss_aux = sum(criterion(aux, masks.long()) for aux in aux_logits) * cfg.model.deepsup_weight
-                loss = loss_main + loss_aux
-
-                # accumulate losses
-                running_val_main_loss += loss_main.item()
-                running_val_aux_loss += loss_aux.item()
+                loss = criterion(logits, masks.long())
                 running_val_loss += loss.item()
 
                 # compute IoU on this batch
@@ -237,8 +224,6 @@ def main(cfg: DictConfig):
 
                 val_bar.set_postfix(val_loss=running_val_loss / batch_idx)
 
-        avg_val_main_loss = running_val_main_loss / len(val_loader)
-        avg_val_aux_loss = running_val_aux_loss / len(val_loader)
         avg_val_loss = running_val_loss / len(val_loader)
         avg_val_miou = miou_metric.compute().item()
 
@@ -260,13 +245,9 @@ def main(cfg: DictConfig):
             # Log metrics
             wandb.log({
                 "Train Loss": avg_train_loss,
-                "Train main Loss": avg_train_main_loss,
-                "Train aux Loss": avg_train_aux_loss,
                 "Train mIoU": avg_train_miou,
                 "Epoch": epoch,
                 "Validation Loss": avg_val_loss,
-                "Validation main Loss": avg_val_main_loss,
-                "Validation aux Loss": avg_val_aux_loss,
                 "Validation mIoU": avg_val_miou,
                 "Learning Rate": optimizer.param_groups[0]['lr'],
                 "Validation Confusion Matrix": confmat
