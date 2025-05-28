@@ -16,14 +16,14 @@ augmentation:
 
 train:
     epoch_size: 200 # number of batches per epoch
-    accum_steps: 8 # number of batches per gradient accumulation step
-    batch_size: 4  # number of images per batch
+    accum_steps: 32 # number of batches per gradient accumulation step
+    batch_size: 1  # number of images per batch
     learning_rate: 1e-3
     num_epochs: 100
 
 model:
     backbone: "facebook/dinov2-base"  # small | base | large
-    freeze_backbone: True
+    freeze_backbone: False
     patch_size: 14
     hidden_size: 128
     decoder_channels: 256
@@ -31,7 +31,7 @@ model:
     deepsup_weight: 0.4
 
 checkpoint:
-    model_name: "mask2former"
+    model_name: "mask2former2"
     comment: "base model, frozen backbone, augmentation"
 
 visualization:

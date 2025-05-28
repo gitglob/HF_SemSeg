@@ -117,8 +117,9 @@ class KittiSemSegDataset(Dataset):
         if np.any(train_mask == 155):
             raise ValueError("Found an invalid mask (mapping: 155).")
 
-        augmented = self.transform(image=image, mask=train_mask)
-        image, train_mask = augmented['image'], augmented['mask']
+        if self.transform is not None:
+            augmented = self.transform(image=image, mask=train_mask)
+            image, train_mask = augmented['image'], augmented['mask']
 
         return image, train_mask
 
