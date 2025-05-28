@@ -31,7 +31,7 @@ model:
     deepsup_weight: 0.4
 
 checkpoint:
-    model_name: "mask2former"
+    model_name: "seg2former"
     comment: "base model, frozen backbone, augmentation"
 
 visualization:

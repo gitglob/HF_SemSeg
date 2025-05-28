@@ -32,46 +32,38 @@ class Seg2Former(nn.Module):
             "nvidia/segformer-b0-finetuned-cityscapes-512-1024"
         )
 
-        # 3) build upsample+fuse blocks
-        # self.up_block1 = nn.Sequential(
-        #     nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-        #     nn.Conv2d(256, 128, kernel_size=3, padding=1),
-        #     nn.BatchNorm2d(128),
-        #     nn.ReLU(inplace=True),
-        # )
-        # self.up_block2 = nn.Sequential(
-        #     nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-        #     nn.Conv2d(128, 64, kernel_size=3, padding=1),
-        #     nn.BatchNorm2d(64),
-        #     nn.ReLU(inplace=True),
-        # )
-        # self.classifier = nn.Conv2d(64, num_labels, kernel_size=1)
-
     def process(self, images: torch.Tensor) -> torch.Tensor:
-        pixel_values = self.processor(images, return_tensors="pt").pixel_values  # already floats, normalized
+        inputs = self.processor(images, return_tensors="pt")  # already floats, normalized
+        pixel_values = inputs.pixel_values  # [B, C, H, W]
+
         return pixel_values
     
     def unprocess(self, outputs, images):
-        _, _, H, W = images.shape
-        predicted_semantic_map = self.processor.post_process_semantic_segmentation(outputs, target_sizes=[(H, W)])[0]
+        B, _, H, W = images.shape
+        target_sizes = [(H, W)] * B
+        predicted_semantic_map = self.processor.post_process_semantic_segmentation(outputs, target_sizes=target_sizes)
+        predicted_semantic_map = torch.stack(predicted_semantic_map, dim=0)  # [B, H, W]
         return predicted_semantic_map
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
-        # prepare
+        B, C, H, W = images.shape
+
+        # Prepare using the processor
         pixel_values = self.process(images).to(self.model.device)
+
+        # Forward pass through the model
         outputs = self.model(pixel_values=pixel_values)
+        logits = outputs.logits
 
-        logits = outputs.logits                  # Shape: [B, num_labels, h, w]
-        # logits_up1 = self.up_block1(logits)      # Upsample to h*2, w*2
-        # logits_up2 = self.up_block2(logits_up1)  # Upsample to h*4, w*4
-        # logits_up2 = self.classifier(logits_up2)
+        # Upsample logits to original image size
+        logits_up = F.interpolate(
+            logits,
+            size=(H, W),
+            mode="bilinear",
+            align_corners=False
+        ) # Interpolate to H, W
 
-        logits_up = F.interpolate(logits,
-                            size=images.shape[-2:],
-                            mode="bilinear",
-                            align_corners=False) # Interpolate to H, W
-
-        return logits_up
+        return outputs, logits_up       # Shape: [B, num_labels, H, W]
 
 
 def main(cfg):
@@ -94,7 +86,7 @@ def main(cfg):
     print("~~~~~Inference~~~~~")
     model.eval()
     print("~~~~~Input Shapes~~~~~")
-    images = torch.randint(0, 256, (1, 3, H, W), dtype=torch.uint8)
+    images = torch.randint(0, 256, (2, 3, H, W), dtype=torch.uint8)
     print(f"Input  shape: {tuple(images.shape)}")
     with torch.no_grad():
         # Forward

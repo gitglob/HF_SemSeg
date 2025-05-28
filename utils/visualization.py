@@ -38,7 +38,7 @@ def plot_image_and_masks(image: torch.tensor,
     miou_metric = JaccardIndex(
         task='multiclass',
         num_classes=NUM_CLASSES,
-        average='macro',
+        average='micro',
         ignore_index=255
     )
     miou_metric.reset()

@@ -50,7 +50,7 @@ def main(cfg: DictConfig):
     miou_metric = JaccardIndex(
         task='multiclass',
         num_classes=NUM_CLASSES,
-        average='macro',
+        average='micro',
         ignore_index=None
     ).to(device)
 

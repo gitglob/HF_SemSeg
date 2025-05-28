@@ -20,10 +20,7 @@ cur_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(cur_dir)
 sys.path.append(str(project_root))
 
-# from models.DinoSeg import DinoSeg
-# from models.DinoSegUnet import DinoSegUnet as DinoSeg
 from models.Seg2Former import Seg2Former as DinoSeg
-# from models.DinoSegDeepSup import DinoSegDeepSup as DinoSeg
 from models.tools import CombinedLoss
 from data.dataset import KittiSemSegDataset
 from utils.visualization import plot_image_and_masks
@@ -87,15 +84,11 @@ def main(cfg: DictConfig):
             mean_range=(0.0, 0.0),
             p=0.5
         ),
-
-        # finally convert to tensor
-        ToTensorV2()
     ])
 
     # Define deterministic transforms for validation
     val_transform = A.Compose([
-        A.CenterCrop(height=crop_size[0], width=crop_size[1]),
-        ToTensorV2()
+        A.CenterCrop(height=crop_size[0], width=crop_size[1])
     ])
 
     # Dataset and DataLoader
@@ -124,7 +117,7 @@ def main(cfg: DictConfig):
     miou_metric = JaccardIndex(
         task='multiclass',
         num_classes=NUM_CLASSES,
-        average='macro',
+        average='micro',
         ignore_index=255
     ).to(device)
 
@@ -144,18 +137,19 @@ def main(cfg: DictConfig):
         # Iterate over the training dataset
         train_bar = tqdm(train_loader, desc=f"[Epoch {epoch}] Train")
         for batch_idx, (imgs, masks) in enumerate(train_bar, start=1):
-            imgs, masks = imgs.to(device), masks.squeeze(1).to(device)  # [B, 1, H, W] -> [B, H, W]
+            imgs, masks = imgs, masks  # [B, H, W, 3] -> [B, H, W]
+            imgs = imgs.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
 
             # forward + loss
-            logits = model(imgs)
-            loss = criterion(logits, masks.long())
+            outputs, logits_up = model(imgs)
+            loss = criterion(logits_up, masks.long().to(device))
 
             # scale the loss down so that gradients accumulate correctly
             loss = loss / cfg.train.accum_steps
 
             # compute IoU on this batch
-            preds = torch.argmax(logits, dim=1)  # [B, H, W]
-            miou_metric.update(preds, masks)
+            preds = model.unprocess(outputs, imgs)  # [B, H, W]
+            miou_metric.update(preds, masks.to(device))
 
             # Compute gradients but don't step the optimizer yet
             loss.backward()
@@ -185,19 +179,19 @@ def main(cfg: DictConfig):
         with torch.no_grad():
             val_bar = tqdm(val_loader, desc=f"[Epoch {epoch}/{cfg.train.num_epochs}]  Val")
             for batch_idx, (imgs, masks) in enumerate(val_bar, start=1):
-                imgs, masks = imgs.to(device), masks.to(device).squeeze(1)
+                imgs, masks = imgs, masks  # [B, H, W, 3] -> [B, H, W]
+                imgs = imgs.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
 
                 # forward + loss
-                output = model(imgs)
-                logits = output
+                outputs, logits_up = model(imgs)
                 cls_map = None
 
-                loss = criterion(logits, masks.long())
+                loss = criterion(logits_up, masks.long().to(device))
                 running_val_loss += loss.item()
 
                 # compute IoU on this batch
-                preds = torch.argmax(logits, dim=1)  # [B, H, W]
-                miou_metric.update(preds, masks)
+                preds = model.unprocess(outputs, imgs)  # [B, H, W]
+                miou_metric.update(preds, masks.to(device))
 
                 # Store predictions and targets for confusion matrix
                 if cfg.wandb.enabled:
@@ -228,7 +222,6 @@ def main(cfg: DictConfig):
         avg_val_miou = miou_metric.compute().item()
 
         # Update learning rate based on validation loss
-        # scheduler.step(avg_val_loss)
         scheduler.step()
 
         ####### LOG TO W&B #######
