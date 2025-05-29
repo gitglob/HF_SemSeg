@@ -4,6 +4,11 @@ from torch.utils.data import DataLoader
 from torchmetrics import JaccardIndex
 import os
 import sys
+from hydra import compose, initialize
+from omegaconf import DictConfig, OmegaConf
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+
 
 # Add the project root directory to the Python path
 cur_dir = os.path.dirname(os.path.abspath(__file__))
@@ -11,6 +16,7 @@ project_root = os.path.dirname(cur_dir)
 sys.path.append(str(project_root))
 
 from models.DinoSeg import DinoSeg
+from models.DinoSegUnet import DinoSegUnet
 from data.dataset import KittiSemSegDataset
 
 # Device configuration
@@ -20,19 +26,21 @@ print(f"Using device: {device}")
 # Hyperparameters
 BATCH_SIZE = 1
 IMAGE_SIZE = (375, 1242)
-NUM_CLASSES = 35
-checkpoint_path = "checkpoints/best_model.pth"
+NUM_CLASSES = 33
 
-def main():
+def main(cfg: DictConfig):
     # Dataset and DataLoader
-    dataset_root = '/home/panos/Documents/data/kitti/data_semantics/training'
-    val_dataset = KittiSemSegDataset(dataset_root, train=True, target_size=IMAGE_SIZE)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+    dataset_root = '/home/panos/Documents/data/kitti-360'
+    transform = A.Compose([ToTensorV2()])
+    val_dataset = KittiSemSegDataset(dataset_root, train=False, transform=transform)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
 
     # Initialize model
-    model = DinoSeg(num_labels=NUM_CLASSES).to(device)
+    model = DinoSegUnet(num_labels=cfg.dataset.num_classes, model_cfg=cfg.model).to(device)
+    checkpoint_path = f"checkpoints/{cfg.checkpoint.model_name}.pth"
     if os.path.exists(checkpoint_path):
-        model.load_state_dict(torch.load(checkpoint_path))
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint["model_state_dict"])
         print(f"Loaded model from {checkpoint_path}")
     else:
         print(f"Checkpoint not found at {checkpoint_path}")
@@ -42,7 +50,7 @@ def main():
     miou_metric = JaccardIndex(
         task='multiclass',
         num_classes=NUM_CLASSES,
-        average='macro',
+        average='micro',
         ignore_index=None
     ).to(device)
 
@@ -52,7 +60,7 @@ def main():
             imgs, masks = imgs.to(device), masks.to(device).squeeze(1)  # [B, 1, H, W] -> [B, H, W]
 
             # Forward pass
-            outputs = model(imgs, original_size=IMAGE_SIZE)
+            outputs = model(imgs)
             preds = torch.argmax(outputs, dim=1)  # [B, H, W]
 
             # Compute mIoU for the current image
@@ -82,4 +90,10 @@ def main():
             plt.show()  # Wait for the user to close the plot before continuing
 
 if __name__ == "__main__":
-    main()
+    with initialize(
+        version_base=None, 
+        config_path=f"../configs", 
+        job_name="test"
+    ):
+        cfg = compose(config_name="config")
+        main(cfg)

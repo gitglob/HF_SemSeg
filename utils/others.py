@@ -19,31 +19,35 @@ def get_cls_attention_map(attentions, H, W, patch_size):
 
     return cls_map
 
-def save_checkpoint(model, optimizer, epoch, best_val_miou, checkpoint_cfg):
+def save_checkpoint(model, optimizer, epoch, best_val_miou, checkpoint_cfg, scheduler):
     """Save model, optimizer, epoch, and best_val_miou to a checkpoint."""
     checkpoint_path = f"checkpoints/" + checkpoint_cfg.model_name + ".pth"
     torch.save({
+        "model_name": checkpoint_cfg.model_name,
+        "comment": checkpoint_cfg.comment,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
         "epoch": epoch,
         "best_val_miou": best_val_miou
     }, checkpoint_path)
-    print(f"Checkpoint saved at epoch {epoch} with mIoU={best_val_miou:.4f}")
+    print(f"Checkpoint saved at epoch {epoch} with mIoU={best_val_miou:.4f} and lr={scheduler.get_last_lr()[0]:.6f}")
 
-def load_checkpoint(model, optimizer, checkpoint_cfg):
+def load_checkpoint(model, optimizer, checkpoint_cfg, scheduler):
     """Load model, optimizer, epoch, and best_val_miou from a checkpoint."""
     checkpoint_path = f"checkpoints/" + checkpoint_cfg.model_name + ".pth"
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path)
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        # scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         epoch = checkpoint["epoch"]
         best_val_miou = checkpoint["best_val_miou"]
-        print(f"Checkpoint loaded: Resuming from epoch {epoch} with mIoU={best_val_miou:.4f}")
+        print(f"Checkpoint loaded: Resuming from epoch {epoch} with mIoU={best_val_miou:.4f} and lr={scheduler.get_last_lr()[0]:.6f}")
         return epoch, best_val_miou
     else:
         print("No checkpoint found. Starting from scratch.")
-        return 0, 0.0
+        return 1, 0.0
 
 def print_model_and_gpu_stats(model, device=torch.device('cuda:0')):
     # 1) Estimate model size on GPU (parameters only, in MB)
