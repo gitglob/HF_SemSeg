@@ -4,13 +4,9 @@ import cv2
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
-import torch.nn as nn
-import bitsandbytes as bnb
-from torch.amp import autocast, GradScaler
 from torchmetrics import JaccardIndex
 from tqdm import tqdm
 import albumentations as A
-from albumentations.pytorch import ToTensorV2
 import wandb
 from hydra import initialize, compose
 from omegaconf import DictConfig, OmegaConf
@@ -20,14 +16,12 @@ cur_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(cur_dir)
 sys.path.append(str(project_root))
 
-# from models.DinoSeg import DinoSeg
-# from models.DinoSegUnet import DinoSegUnet as DinoSeg
-# from models.Seg2Former import Seg2Former as DinoSeg
-from models.DinoSegDeepSup import DinoSegDeepSup as DinoSeg
+from models.DinoFPN import DinoFPN as DinoSeg
 from models.tools import CombinedLoss
 from data.dataset import KittiSemSegDataset
+from data.labels_kitti360 import trainId2label, NUM_CLASSES
 from utils.visualization import plot_image_and_masks
-from utils.others import save_checkpoint, load_checkpoint, get_cls_attention_map
+from utils.others import save_checkpoint, load_checkpoint
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -58,22 +52,22 @@ def main(cfg: DictConfig):
             fill_mask=255,
             p=0.7
         ),
-        A.Perspective(scale=(0.01, 0.03), p=0.2),  # tiny camera viewpoint warp
+        A.Perspective(scale=(0.01, 0.03), p=0.5),  # tiny camera viewpoint warp
 
         # -- Photometric --
-        A.RandomBrightnessContrast(brightness_limit=0.15, contrast_limit=0.15, p=0.3),
-        A.RandomGamma(gamma_limit=(90, 110), p=0.3),
+        A.RandomBrightnessContrast(brightness_limit=0.15, contrast_limit=0.15, p=0.5),
+        A.RandomGamma(gamma_limit=(90, 110), p=0.5),
         A.OneOf([
             A.RandomFog(fog_coef_range=(0.05, 0.2), p=1.0),
             A.RandomShadow(shadow_roi=(0, 0.5, 1, 1), num_shadows_limit=(1, 2), p=1.0),
             A.RandomSunFlare(src_radius=50, p=1.0)
-        ], p=0.3),
+        ], p=0.5),
 
         # -- Occlusions --
         A.CoarseDropout(num_holes_range=(1, 4), 
                         hole_height_range=(5, 30), 
                         hole_width_range=(5, 30), 
-                        p=0.3),                                # random occlusion
+                        p=0.5),                                # random occlusion
 
         # — Blur & noise: motion, sensor, compression —
         A.OneOf([
@@ -84,17 +78,13 @@ def main(cfg: DictConfig):
         A.GaussNoise(
             std_range=(10.0/255.0, 50.0/255.0),
             mean_range=(0.0, 0.0),
-            p=0.3
-        ),
-
-        # finally convert to tensor
-        ToTensorV2()
+            p=0.5
+        )
     ])
 
     # Define deterministic transforms for validation
     val_transform = A.Compose([
-        A.CenterCrop(height=crop_size[0], width=crop_size[1]),
-        ToTensorV2()
+        A.CenterCrop(height=crop_size[0], width=crop_size[1])
     ])
 
     # Dataset and DataLoader
@@ -115,85 +105,64 @@ def main(cfg: DictConfig):
     )
     model = model.to(device)
     criterion = CombinedLoss(alpha=0.8, ignore_index=255)
-    # criterion = nn.CrossEntropyLoss(ignore_index=255)
-    # optimizer = optim.Adam(model.parameters(), lr=cfg.train.learning_rate)
-    optimizer = bnb.optim.Adam8bit(model.parameters(), lr=cfg.train.learning_rate)  # Use 8-bit Adam optimizer if specified
-
-    # Initialize scaler for mixed precision training
-    scaler = GradScaler()
+    optimizer = optim.Adam(model.parameters(), lr=cfg.train.learning_rate)
 
     # Metric: mean IoU over all classes
     miou_metric = JaccardIndex(
         task='multiclass',
         num_classes=cfg.dataset.num_classes,
-        average='macro',
+        average='micro',
         ignore_index=255
     ).to(device)
 
     # Initialize learning rate scheduler
-    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.train.num_epochs)
 
     # Load the best model if it exists
     start_epoch, best_val_miou = load_checkpoint(model, optimizer, cfg.checkpoint, scheduler)
 
-    for epoch in range(1, cfg.train.num_epochs + 1):
+    for epoch in range(start_epoch, cfg.train.num_epochs + 1):
         ####### TRAINING #######
         model.train()
-        running_loss = running_main_loss = running_aux_loss = 0.0
+        optimizer.zero_grad()
         miou_metric.reset()
+        running_train_loss = 0.0
 
-        # Create a fixed‐length iterator over your loader
-        train_iter = iter(train_loader)
-        train_bar  = tqdm(range(cfg.train.epoch_size), desc=f"[Epoch {epoch}] Train")
-
-        for step in train_bar:
-            batch_idx = step + 1
-            try:
-                imgs, masks = next(train_iter)
-            except StopIteration:
-                # if you run out of data, re‐start the iterator
-                train_iter = iter(train_loader)
-                imgs, masks = next(train_iter)
-            imgs, masks = imgs.to(device), masks.squeeze(1).to(device)  # [B, 1, H, W] -> [B, H, W]
+        # Iterate over the training dataset
+        train_bar = tqdm(train_loader, desc=f"[Epoch {epoch}] Train")
+        for batch_idx, (imgs, masks) in enumerate(train_bar, start=1):
+            masks = masks.to(device)  # [B, H, W]
+            imgs = imgs.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
 
             # forward + loss
-            with autocast(device_type="cuda"):
-                logits, aux_logits = model(imgs)
-                loss_main = criterion(logits, masks.long())
-                loss_aux = sum(criterion(aux, masks.long()) for aux in aux_logits) * cfg.model.deepsup_weight
-                loss = loss_main + loss_aux
+            logits = model(imgs)
+            loss = criterion(logits, masks.long())
 
-                # scale the loss down so that gradients accumulate correctly
-                loss = loss / cfg.train.accum_steps
+            # scale the loss down so that gradients accumulate correctly
+            loss = loss / cfg.train.accum_steps
 
             # compute IoU on this batch
             preds = torch.argmax(logits, dim=1)  # [B, H, W]
             miou_metric.update(preds, masks)
 
             # Compute gradients but don't step the optimizer yet
-            scaler.scale(loss).backward()
+            loss.backward()
 
             # every accum_steps, step & zero_grad
             if batch_idx % cfg.train.accum_steps == 0:
-                scaler.step(optimizer)
-                scaler.update()
+                optimizer.step()
                 optimizer.zero_grad()
 
             # accumulate losses
-            running_main_loss += loss_main.item()
-            running_aux_loss += loss_aux.item()
-            running_loss += (loss_main.item() + loss_aux.item())
-            train_bar.set_postfix(loss=running_loss / batch_idx)
+            running_train_loss += loss.item()
+            train_bar.set_postfix(loss=running_train_loss / batch_idx)
 
-        avg_train_main_loss = running_main_loss / len(train_loader)
-        avg_train_aux_loss = running_aux_loss / len(train_loader)
-        avg_train_loss = running_loss / len(train_loader)
+        avg_train_loss = running_train_loss / len(train_loader)
         avg_train_miou = miou_metric.compute().item()
 
         ####### VALIDATION #######
         model.eval()
-        running_val_main_loss = running_val_aux_loss = running_val_loss = 0.0
+        running_val_loss = 0.0
         miou_metric.reset()
 
         # Prepare lists for storing predictions and targets for confusion matrix
@@ -204,21 +173,16 @@ def main(cfg: DictConfig):
         with torch.no_grad():
             val_bar = tqdm(val_loader, desc=f"[Epoch {epoch}/{cfg.train.num_epochs}]  Val")
             for batch_idx, (imgs, masks) in enumerate(val_bar, start=1):
-                imgs, masks = imgs.to(device), masks.to(device).squeeze(1)
+                masks = masks.to(device)  # [B, H, W]
+                imgs = imgs.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
 
                 # forward + loss
-                with autocast(device_type="cuda"):
-                    output = model(imgs)
-                    logits, aux_logits = output
-                    cls_map = None
+                logits = model(imgs)
+                cls_map = None
 
-                    loss_main = criterion(logits, masks.long())
-                    loss_aux = sum(criterion(aux, masks.long()) for aux in aux_logits) * cfg.model.deepsup_weight
-                    loss = loss_main + loss_aux
+                loss = criterion(logits, masks.long())
 
                 # accumulate losses
-                running_val_main_loss += loss_main.item()
-                running_val_aux_loss += loss_aux.item()
                 running_val_loss += loss.item()
 
                 # compute IoU on this batch
@@ -248,19 +212,16 @@ def main(cfg: DictConfig):
 
                 val_bar.set_postfix(val_loss=running_val_loss / batch_idx)
 
-        avg_val_main_loss = running_val_main_loss / len(val_loader)
-        avg_val_aux_loss = running_val_aux_loss / len(val_loader)
         avg_val_loss = running_val_loss / len(val_loader)
         avg_val_miou = miou_metric.compute().item()
 
         # Update learning rate based on validation loss
-        # scheduler.step(avg_val_loss)
         scheduler.step()
 
         ####### LOG TO W&B #######
         if cfg.wandb.enabled:
             # Log confusion matrix
-            class_names = [f"class_{i}" for i in range(cfg.dataset.num_classes)]
+            class_names = [trainId2label[i].name for i in range(NUM_CLASSES)]
             confmat = wandb.plot.confusion_matrix(
                 probs=None,
                 y_true=all_targets,
@@ -270,17 +231,13 @@ def main(cfg: DictConfig):
 
             # Log metrics
             wandb.log({
-                "Train main Loss": avg_train_main_loss,
-                "Train aux Loss": avg_train_aux_loss,
                 "Train Loss": avg_train_loss,
                 "Train mIoU": avg_train_miou,
-                "Validation main Loss": avg_val_main_loss,
-                "Validation aux Loss": avg_val_aux_loss,
+                "Epoch": epoch,
                 "Validation Loss": avg_val_loss,
                 "Validation mIoU": avg_val_miou,
-                "Validation Confusion Matrix": confmat,
-                "Epoch": epoch,
-                "Learning Rate": optimizer.param_groups[0]['lr']
+                "Learning Rate": optimizer.param_groups[0]['lr'],
+                "Validation Confusion Matrix": confmat
             })
 
         ####### PRINT & CHECKPOINT #######

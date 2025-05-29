@@ -47,7 +47,7 @@ def load_checkpoint(model, optimizer, checkpoint_cfg, scheduler):
         return epoch, best_val_miou
     else:
         print("No checkpoint found. Starting from scratch.")
-        return 0, 0.0
+        return 1, 0.0
 
 def print_model_and_gpu_stats(model, device=torch.device('cuda:0')):
     # 1) Estimate model size on GPU (parameters only, in MB)

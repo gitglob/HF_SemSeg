@@ -33,94 +33,74 @@ class DinoBackbone(nn.Module):
         # pick the final tokens for your “main” feature
         tokens = hidden_states[-1][:, 1:] # Exclude the [CLS] token [B, N, C]
 
-        # pick a few intermediate layers the laterals (e.g. layers 3, 6, 9)
-        idxs = [3, 6, 9]
-        laterals = [hidden_states[i][:, 1:] for i in idxs] # each lateral: [B, 256, 768]
-
         if return_attention:
-            return tokens, laterals, backbone_output.attentions
-        return tokens, laterals
+            return tokens, backbone_output.attentions
+        return tokens
 
-class EncoderDecoderHead(nn.Module):
-    def __init__(self, in_channels, skip_channels, decoder_channels, n_classes):
+class UnetHead(nn.Module):
+    def __init__(self, in_channels, n_classes, gn_groups=32):
         super().__init__()
         # Bottleneck
         self.bottleneck = nn.Sequential(
-            nn.Conv2d(in_channels, decoder_channels, 3, padding=1),
-            nn.BatchNorm2d(decoder_channels), 
+            nn.Conv2d(in_channels, 512, 3, padding=1),
+            nn.GroupNorm(gn_groups, 512),
             nn.ReLU(),
             nn.Dropout2d(0.1),
         )
-        # Projections for each skip
-        self.proj = nn.ModuleList([
-            nn.Sequential(nn.Conv2d(c, decoder_channels,1), 
-                          nn.BatchNorm2d(decoder_channels), 
-                          nn.ReLU(),
-                          nn.Dropout2d(0.1)
-                          )
-            for c in skip_channels
-        ])
-        # Refinement convs after each fuse
-        self.refines = nn.ModuleList([
-            nn.Sequential(nn.Conv2d(decoder_channels, decoder_channels,3,padding=1),
-                          nn.BatchNorm2d(decoder_channels), 
-                          nn.ReLU(),
-                          nn.Dropout2d(0.1),
-                          nn.Conv2d(decoder_channels, decoder_channels,3,padding=1),
-                          nn.BatchNorm2d(decoder_channels), 
-                          nn.ReLU(),
-                          nn.Dropout2d(0.1)
-            )
-            for _ in skip_channels
-        ])
-        # Final classifier
-        self.dropout = nn.Dropout2d(0.1)
-        self.classifier = nn.Sequential(
+        
+        # Upsampling
+        self.up1 = nn.Sequential(
+            nn.Conv2d(512, 256, 3, padding=1),
+            nn.GroupNorm(gn_groups, 256),
+            nn.ReLU(),
             nn.Dropout2d(0.1),
-            nn.Conv2d(decoder_channels, n_classes, 1),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
+        )
+        self.up2 = nn.Sequential(
+            nn.Conv2d(256, 128, 3, padding=1),
+            nn.GroupNorm(gn_groups, 128),
+            nn.ReLU(),
+            nn.Dropout2d(0.1),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
+        )
+        self.up3 = nn.Sequential(
+            nn.Conv2d(128, 64, 3, padding=1),
+            nn.GroupNorm(gn_groups, 64),
+            nn.ReLU(),
+            nn.Dropout2d(0.1),
+            nn.Upsample(scale_factor=3, mode='bilinear', align_corners=False)
         )
 
-    def forward(self, feat, skips):
-        """
-        Take the output from the backbone and the lateral features:
-            1. Pass the output through the bottleneck
-            2. For each skip:
-                a. Project the skip to the decoder channels
-                b. Add the projected skip to the output
-                c. Pass through a refinement conv to combine different scale features
-            3. Classify the output to get the final logits
-        """
-        # feat: deepest [B,C4,h/32,w/32]
-        # skips: list of skip maps [feat3, feat2, feat1]
-        x = self.bottleneck(feat)
-        for proj, refine, skip in zip(self.proj, self.refines, skips):
-            # x:    [B, N, h, w] # N < C
-            # skip: [B, C, h, w]
-            skip = proj(skip) # [B, N, h, w]
-            x = x + skip # [B, N, h, w]
-            x = refine(x) # [B, N, h, w]
-        logits = self.classifier(x) # [B, num_classes, h, w]
-        return logits
-    
-class DinoSegUnet(nn.Module):
+        # Final classifier
+        self.classifier = nn.Sequential(
+            nn.Dropout2d(0.1),
+            nn.Conv2d(64, n_classes, 1),
+        )
+
+    def forward(self, feat):
+        x = self.bottleneck(feat)  # [B, 512, h/32, w/32]
+        x = self.up1(x)  # [B, 256, h/16, w/16]
+        x = self.up2(x)  # [B, 128, h/8, w/8]
+        x = self.up3(x)  # [B, 64, h/8, w/8]
+        logits_low = self.classifier(x)  # [B, num_classes, h, w]
+        return logits_low
+
+class DinoUnet(nn.Module):
     def __init__(self, num_labels, model_cfg):
         super().__init__()
         BACKBONE_MODEL = model_cfg.backbone
 
         # Processor
         self.processor = AutoImageProcessor.from_pretrained(BACKBONE_MODEL, use_fast=False)
-        self.processor.do_resize      = False
-        self.processor.do_center_crop = False
+        # self.processor.do_resize      = False
+        # self.processor.do_center_crop = False
         
         # Backbone
         self.backbone = DinoBackbone(BACKBONE_MODEL, freeze_backbone=model_cfg.freeze_backbone)
 
         # Segmentation head
-        lateral_channels = [self.backbone.hidden_size]*3 
-        self.head = EncoderDecoderHead(
+        self.head = UnetHead(
             in_channels=self.backbone.hidden_size,
-            skip_channels=lateral_channels,
-            decoder_channels=model_cfg.decoder_channels,
             n_classes=num_labels
         )
 
@@ -137,6 +117,7 @@ class DinoSegUnet(nn.Module):
         H: height of the image
         W: width of the image
         """
+        B, _, H_orig, W_orig = images.shape
 
         # preprocess
         if images.dim() == 3:  # Single image case with shape [C, H, W]
@@ -150,25 +131,18 @@ class DinoSegUnet(nn.Module):
         # backbone → [B, 1+N, C] and attention maps
         output = self.backbone(images, return_attention=return_attention)
         if return_attention:
-            tokens, laterals, attentions = output # tokens [B, N, C], attentions [B, num_heads, N, N]
+            tokens, attentions = output # tokens [B, N, C], attentions [B, num_heads, N, N]
         else:
-            tokens, laterals = output
+            tokens = output
 
         # reshape to [B, C, H/patch, W/patch]
         h, w = H // self.backbone.patch_size, W // self.backbone.patch_size
         tokens = tokens.transpose(1,2)      # [B, C, N]
         feat = tokens.reshape(B, -1, h, w)  # [B, C, h, w]
 
-        # reshape each lateral the same way
-        lateral_feats = []
-        for lat in laterals:
-            # lat: [B, N, C] → [B, C, h, w]
-            lf = lat.transpose(1,2).reshape(B, -1, h, w)
-            lateral_feats.append(lf)
-
         # Upsample and classify
-        logits = self.head(feat, skips=lateral_feats) # [B, num_classes, h, w]
-        logits = F.interpolate(logits, size=(H, W), mode="bilinear", align_corners=False)
+        logits = self.head(feat) # [B, num_classes, h, w]
+        logits = F.interpolate(logits, size=(H_orig, W_orig), mode="bilinear", align_corners=False)
 
         if return_attention:
             return logits, attentions
@@ -184,7 +158,7 @@ def main(cfg):
     H = 375
     W = 1242
     orig_size = (H, W)
-    model = DinoSegUnet(
+    model = DinoUnet(
         num_labels=cfg.dataset.num_classes,
         model_cfg=cfg.model
     )
@@ -193,7 +167,7 @@ def main(cfg):
     print(model.processor)
 
     print("~~~~~Model~~~~~")
-    print(summary(model, (3, 375, 1242), device=device))
+    # print(summary(model, (1, 3, H, W), device=device))
 
     print("~~~~~Inference~~~~~")
     images = torch.randint(0, 256, (8, 3, H, W), dtype=torch.uint8)  # Example batch of images in 0~255
