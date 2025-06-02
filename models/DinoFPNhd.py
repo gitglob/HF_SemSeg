@@ -126,7 +126,8 @@ class DinoFPN(nn.Module):
         if images.shape[1] == 1:  # If the image is greyscale
             images = images.repeat(1, 3, 1, 1)  # Convert to 3 channels
 
-        images = self.processor(images, return_tensors="pt").pixel_values.to(device)
+        images = self.processor(images, return_tensors="pt").pixel_values
+        images = images.to(self.backbone.device)
 
         # backbone → [B, 1+N, C] and attention maps
         out = self.backbone(images, output_hidden_states=True)
