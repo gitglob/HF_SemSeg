@@ -67,7 +67,7 @@ def main(cfg: DictConfig):
             # Forward pass with inference time
             torch.cuda.synchronize()
             t0 = time.perf_counter()
-            logits = model(imgs)    
+            logits = model(imgs)
             torch.cuda.synchronize()
             t1 = time.perf_counter()
             inference_time = t1 - t0
