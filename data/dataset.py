@@ -6,8 +6,6 @@ import matplotlib.pyplot as plt
 
 import torch
 from torch.utils.data import Dataset, DataLoader
-import torchvision.transforms as T
-from torchvision.transforms import InterpolationMode
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 

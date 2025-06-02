@@ -1,5 +1,7 @@
+import numpy as np
 import torch
 import matplotlib.pyplot as plt
+from matplotlib.colors import BoundaryNorm
 from torch.utils.data import DataLoader
 from torchmetrics import JaccardIndex
 import os
@@ -15,8 +17,7 @@ cur_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(cur_dir)
 sys.path.append(str(project_root))
 
-from models.DinoSeg import DinoSeg
-from models.DinoSegUnet import DinoSegUnet
+from models.DinoFPNhd import DinoFPN
 from data.dataset import KittiSemSegDataset
 
 # Device configuration
@@ -25,18 +26,23 @@ print(f"Using device: {device}")
 
 # Hyperparameters
 BATCH_SIZE = 1
-IMAGE_SIZE = (375, 1242)
+IMAGE_SIZE = (364, 1232)
 NUM_CLASSES = 33
 
 def main(cfg: DictConfig):
     # Dataset and DataLoader
     dataset_root = '/home/panos/Documents/data/kitti-360'
-    transform = A.Compose([ToTensorV2()])
-    val_dataset = KittiSemSegDataset(dataset_root, train=False, transform=transform)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
+    crop_size = (cfg.augmentation.crop_height, cfg.augmentation.crop_width)
+    transform = A.Compose([
+        A.CenterCrop(height=crop_size[0], width=crop_size[1])
+    ])
+    val_dataset = KittiSemSegDataset(dataset_root, train=False, transform=None)
+    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=True, num_workers=4, pin_memory=True)
+    cmap = plt.get_cmap("viridis", NUM_CLASSES)
+    norm = BoundaryNorm(boundaries=np.arange(NUM_CLASSES + 1) - 0.5, ncolors=NUM_CLASSES)
 
     # Initialize model
-    model = DinoSegUnet(num_labels=cfg.dataset.num_classes, model_cfg=cfg.model).to(device)
+    model = DinoFPN(num_labels=cfg.dataset.num_classes, model_cfg=cfg.model).to(device)
     checkpoint_path = f"checkpoints/{cfg.checkpoint.model_name}.pth"
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path)
@@ -57,16 +63,24 @@ def main(cfg: DictConfig):
     model.eval()
     with torch.no_grad():
         for idx, (imgs, masks) in enumerate(val_loader):
-            imgs, masks = imgs.to(device), masks.to(device).squeeze(1)  # [B, 1, H, W] -> [B, H, W]
+            masks = masks.to(device)  # [B, H, W]
+            imgs = imgs.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
 
             # Forward pass
-            outputs = model(imgs)
-            preds = torch.argmax(outputs, dim=1)  # [B, H, W]
+            logits = model(imgs)
+            preds = torch.argmax(logits, dim=1)  # [B, H, W]
 
             # Compute mIoU for the current image
             miou_metric.reset()
             miou_metric.update(preds, masks)
             miou = miou_metric.compute().item()
+
+            print(f"Image {idx + 1}/{len(val_loader)}: mIoU = {miou:.4f}")
+            num_identical = torch.sum(preds == masks).item()  
+            print(f"Number of identical pixels: {num_identical}")
+            num_non_identical = torch.sum(preds != masks).item()
+            print(f"Number of non-identical pixels: {num_non_identical}")
+            print(f"Accuracy: {num_identical / (num_identical + num_non_identical):.4f}")
 
             # Plot the image, ground truth, and prediction
             img_np = imgs[0].permute(1, 2, 0).cpu().numpy()  # Convert to HWC format
@@ -78,16 +92,17 @@ def main(cfg: DictConfig):
             ax1.set_title("Input Image")
             ax1.axis("off")
 
-            ax2.imshow(mask_np, cmap="viridis")
+            ax2.imshow(mask_np, cmap=cmap, norm=norm)
             ax2.set_title("Ground Truth")
             ax2.axis("off")
 
-            ax3.imshow(pred_np, cmap="viridis")
+            ax3.imshow(pred_np, cmap=cmap, norm=norm)
             ax3.set_title(f"Prediction (mIoU={miou:.4f})")
             ax3.axis("off")
 
             plt.tight_layout()
             plt.show()  # Wait for the user to close the plot before continuing
+
 
 if __name__ == "__main__":
     with initialize(

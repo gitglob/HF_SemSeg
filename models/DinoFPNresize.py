@@ -85,8 +85,6 @@ class DinoFPN(nn.Module):
 
         # Processor
         self.processor = AutoImageProcessor.from_pretrained(BACKBONE_MODEL, use_fast=False)
-        self.processor.do_resize = False
-        self.processor.do_center_crop = False
 
         # Backbone
         self.backbone = AutoModel.from_pretrained(BACKBONE_MODEL)
@@ -126,7 +124,9 @@ class DinoFPN(nn.Module):
         if images.shape[1] == 1:  # If the image is greyscale
             images = images.repeat(1, 3, 1, 1)  # Convert to 3 channels
 
-        images = self.processor(images, return_tensors="pt").pixel_values.to(device)
+        images = self.processor(images, return_tensors="pt").pixel_values
+        images = images.to(device)
+        _, _, H, W = images.shape
 
         # backbone → [B, 1+N, C] and attention maps
         out = self.backbone(images, output_hidden_states=True)
@@ -134,7 +134,7 @@ class DinoFPN(nn.Module):
         taps = [hstates[i] for i in self.layer_idxs]
 
         # Upsample and classify
-        logits_low = self.head(taps, (H_orig, W_orig)) # [B, num_classes, h, w]
+        logits_low = self.head(taps, (H, W)) # [B, num_classes, h, w]
         logits = F.interpolate(
             logits_low,
             size=(H_orig, W_orig),
@@ -161,9 +161,10 @@ def main(cfg):
 
     print("~~~~~Processor~~~~~")
     print(model.processor)
+    breakpoint()
 
     print("~~~~~Model~~~~~")
-    print(summary(model, (1, 3, H, W), device=device))
+    print(summary(model, (8, 3, H, W), device=device))
 
     print("~~~~~Inference~~~~~")
     images = torch.randint(0, 256, (8, 3, H, W), dtype=torch.uint8)  # Example batch of images in 0~255

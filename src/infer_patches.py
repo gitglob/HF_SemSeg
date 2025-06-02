@@ -14,8 +14,7 @@ cur_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(cur_dir)
 sys.path.append(str(project_root))
 
-from models.DinoSeg import DinoSeg
-from models.DinoSegUnet import DinoSegUnet
+from models.DinoFPN import DinoFPN
 from data.dataset import KittiSemSegDataset
 
 # Device configuration
@@ -115,7 +114,7 @@ def main():
         backbone="facebook/dinov2-base",
         freeze_backbone=True
     )
-    model = DinoSegUnet(num_labels=NUM_CLASSES, model_cfg=model_cfg).to(device)
+    model = DinoFPN(num_labels=NUM_CLASSES, model_cfg=model_cfg).to(device)
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path)
         model.load_state_dict(checkpoint['model_state_dict'])

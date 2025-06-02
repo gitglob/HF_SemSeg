@@ -19,28 +19,11 @@ class FPNHead(nn.Module):
         """
         super().__init__()
         self.patch_size = patch_size
-
-        # 1×1 proj for each feature
-        self.projs = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(in_ch, proj_channels, kernel_size=1, bias=False),
-                nn.GroupNorm(32, proj_channels),
-                nn.ReLU(inplace=True),
-            )
-                for in_ch in embed_dims
-        ])
-
-        # fuse the concatenated features
-        self.fuse = nn.Sequential(
-            nn.Conv2d(len(embed_dims)*proj_channels, proj_channels, kernel_size=3, padding=1),
-            nn.GroupNorm(32, proj_channels),
-            nn.ReLU(inplace=True),
-            nn.Dropout2d(0.1),
-        )
         
         # final classifier
+        in_ch = embed_dims[0] # all embed_dims are the same
         self.classifier = nn.Sequential(
-            nn.Conv2d(proj_channels, proj_channels, kernel_size=3, padding=1),
+            nn.Conv2d(len(embed_dims)*in_ch, proj_channels, kernel_size=3, padding=1),
             nn.GroupNorm(32, proj_channels),
             nn.ReLU(inplace=True),
             nn.Dropout2d(0.1),
@@ -59,7 +42,7 @@ class FPNHead(nn.Module):
 
         # Forward each hidden state
         # turn each [B, N, D] → [B, D, Hf, Wf]
-        for hs, proj in zip(hidden_states, self.projs):
+        for hs in hidden_states:
             # skip the cls token
             hs = hs[:, 1:]                      # → [B, N-1, D]
 
@@ -68,13 +51,10 @@ class FPNHead(nn.Module):
 
             feat2d = hs.transpose(1, 2)         # → [B, D, N-1]
             feat2d = feat2d.view(B, -1, Hf, Wf) # → [B, D, Hf, Wf]
-            feats.append(proj(feat2d))          # → [B, proj_channels, Hf, Wf]
-
-        # Fuse all feature maps
-        fused = torch.cat(feats, dim=1)       # [B, len(embed_dims)*proj_channels, Hf, Wf]
-        fused = self.fuse(fused)              # [B, proj_channels, Hf, Wf]
+            feats.append(feat2d)                # → [B, D, Hf, Wf]
 
         # predict low-res logits and then upsample to orig
+        fused = torch.cat(feats, dim=1)       # [B, len(embed_dims)*D, Hf, Wf]
         logits_low = self.classifier(fused)   # [B, num_classes, Hf, Wf]
         return logits_low
 
@@ -163,7 +143,7 @@ def main(cfg):
     print(model.processor)
 
     print("~~~~~Model~~~~~")
-    print(summary(model, (1, 3, H, W), device=device))
+    print(summary(model, (2, 3, H, W), device=device))
 
     print("~~~~~Inference~~~~~")
     images = torch.randint(0, 256, (8, 3, H, W), dtype=torch.uint8)  # Example batch of images in 0~255

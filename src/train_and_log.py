@@ -16,7 +16,7 @@ cur_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(cur_dir)
 sys.path.append(str(project_root))
 
-from models.DinoFPN import DinoFPN as DinoSeg
+from models.DinoFPNhd import DinoFPN as DinoSeg
 from models.tools import CombinedLoss
 from data.dataset import KittiSemSegDataset
 from data.labels_kitti360 import trainId2label, NUM_CLASSES
@@ -204,7 +204,7 @@ def main(cfg: DictConfig):
                         masks[0].cpu().numpy(),                  # Ground truth
                         preds[0].cpu().numpy(),                  # Predicted segmentation
                         cls_map,                                 # Attention map
-                        epoch
+                        epoch, cfg.dataset.num_classes
                     )
                     if cfg.visualization.attention:
                         del attentions

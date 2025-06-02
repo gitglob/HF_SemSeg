@@ -37,6 +37,38 @@ class FPNHead(nn.Module):
             nn.ReLU(inplace=True),
             nn.Dropout2d(0.1),
         )
+
+        # Upsample to the original resolution (Upsampling logic: 14 (patch size) = 2 * 2 * 2 * 1.75)
+        self.ups = nn.ModuleList([
+            nn.Sequential(
+                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+                nn.Conv2d(proj_channels, proj_channels, kernel_size=3, padding=1),
+                nn.GroupNorm(32, proj_channels),
+                nn.ReLU(inplace=True),
+                nn.Dropout2d(0.1)
+            ),
+            nn.Sequential(
+                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+                nn.Conv2d(proj_channels, proj_channels, kernel_size=3, padding=1),
+                nn.GroupNorm(32, proj_channels),
+                nn.ReLU(inplace=True),
+                nn.Dropout2d(0.1)
+            ),
+            nn.Sequential(
+                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+                nn.Conv2d(proj_channels, proj_channels, kernel_size=3, padding=1),
+                nn.GroupNorm(32, proj_channels),
+                nn.ReLU(inplace=True),
+                nn.Dropout2d(0.1)
+            ),
+            nn.Sequential(
+                nn.Upsample(scale_factor=1.75, mode='bilinear', align_corners=False),
+                nn.Conv2d(proj_channels, proj_channels, kernel_size=3, padding=1),
+                nn.GroupNorm(32, proj_channels),
+                nn.ReLU(inplace=True),
+                nn.Dropout2d(0.1)
+            ),
+        ])
         
         # final classifier
         self.classifier = nn.Sequential(
@@ -74,6 +106,10 @@ class FPNHead(nn.Module):
         fused = torch.cat(feats, dim=1)       # [B, len(embed_dims)*proj_channels, Hf, Wf]
         fused = self.fuse(fused)              # [B, proj_channels, Hf, Wf]
 
+        # Upsample each feature map close to the original resolution
+        for i, up in enumerate(self.ups):
+            fused = up(fused)
+
         # predict low-res logits and then upsample to orig
         logits_low = self.classifier(fused)   # [B, num_classes, Hf, Wf]
         return logits_low
@@ -99,7 +135,7 @@ class DinoFPN(nn.Module):
         # Segmentation head
         self.head = FPNHead(
             embed_dims=[self.backbone.config.hidden_size] * 4,
-            proj_channels=256,
+            proj_channels=model_cfg.decoder_channels,
             num_classes=num_labels,
             patch_size=self.backbone.config.patch_size
         )
@@ -135,12 +171,12 @@ class DinoFPN(nn.Module):
 
         # Upsample and classify
         logits_low = self.head(taps, (H_orig, W_orig)) # [B, num_classes, h, w]
-        logits = F.interpolate(
+        logits = F.interpolate(                        # [B, num_classes, H_orig, W_orig]
             logits_low,
             size=(H_orig, W_orig),
             mode="bilinear",
             align_corners=False
-        )
+        ) # Final interpolation, in case the logits from the head are not at the original resolution
 
         return logits
 
@@ -151,8 +187,8 @@ class DinoFPN(nn.Module):
 def main(cfg):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    H = 375
-    W = 1242
+    H = 280
+    W = 840
     orig_size = (H, W)
     model = DinoFPN(
         num_labels=cfg.dataset.num_classes,
@@ -166,7 +202,7 @@ def main(cfg):
     print(summary(model, (1, 3, H, W), device=device))
 
     print("~~~~~Inference~~~~~")
-    images = torch.randint(0, 256, (8, 3, H, W), dtype=torch.uint8)  # Example batch of images in 0~255
+    images = torch.randint(0, 256, (2, 3, H, W), dtype=torch.uint8)  # Example batch of images in 0~255
     model = model.to(device)
     images = images.to(device)
     with torch.no_grad():

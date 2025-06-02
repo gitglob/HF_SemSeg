@@ -1,5 +1,5 @@
 wandb:
-    enabled: False
+    enabled: True
     project: "HF_SemSeg"
     run_name: ${checkpoint.model_name}
 
@@ -11,13 +11,13 @@ dataset:
     num_classes: 33
 
 augmentation:
-    crop_height: 280 # divisible by 14
-    crop_width: 840  # divisible by 14
+    crop_height: 364
+    crop_width: 1232
 
 train:
     epoch_size: 200
-    accum_steps: 4
-    batch_size: 8
+    accum_steps: 8
+    batch_size: 4
     learning_rate: 1e-3
     num_epochs: 20
 
@@ -27,10 +27,9 @@ model:
     patch_size: 14
     decoder_channels: 256
     deepsup_layers: [3, 6, 9, 12]
-    deepsup_weight: 0.4
 
 checkpoint:
-    model_name: "dinoFPN-crop"
+    model_name: "dino-fpn-hd"
     comment: "base model, frozen backbone, augmentation"
 
 visualization:
