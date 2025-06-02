@@ -1,3 +1,4 @@
+import time
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -26,16 +27,12 @@ print(f"Using device: {device}")
 
 # Hyperparameters
 BATCH_SIZE = 1
-IMAGE_SIZE = (364, 1232)
 NUM_CLASSES = 33
 
 def main(cfg: DictConfig):
     # Dataset and DataLoader
     dataset_root = '/home/panos/Documents/data/kitti-360'
     crop_size = (cfg.augmentation.crop_height, cfg.augmentation.crop_width)
-    transform = A.Compose([
-        A.CenterCrop(height=crop_size[0], width=crop_size[1])
-    ])
     val_dataset = KittiSemSegDataset(dataset_root, train=False, transform=None)
     val_loader = DataLoader(val_dataset, batch_size=1, shuffle=True, num_workers=4, pin_memory=True)
     cmap = plt.get_cmap("viridis", NUM_CLASSES)
@@ -65,9 +62,17 @@ def main(cfg: DictConfig):
         for idx, (imgs, masks) in enumerate(val_loader):
             masks = masks.to(device)  # [B, H, W]
             imgs = imgs.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
+            print(f"\nProcessing image {idx + 1}/{len(val_loader)}")
 
-            # Forward pass
-            logits = model(imgs)
+            # Forward pass with inference time
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            logits = model(imgs)    
+            torch.cuda.synchronize()
+            t1 = time.perf_counter()
+            inference_time = t1 - t0
+            print(f"Inference time: {inference_time:.4f} sec") # ~0.45 seconds
+
             preds = torch.argmax(logits, dim=1)  # [B, H, W]
 
             # Compute mIoU for the current image
@@ -75,7 +80,7 @@ def main(cfg: DictConfig):
             miou_metric.update(preds, masks)
             miou = miou_metric.compute().item()
 
-            print(f"Image {idx + 1}/{len(val_loader)}: mIoU = {miou:.4f}")
+            print(f"mIoU = {miou:.4f}")
             num_identical = torch.sum(preds == masks).item()  
             print(f"Number of identical pixels: {num_identical}")
             num_non_identical = torch.sum(preds != masks).item()
