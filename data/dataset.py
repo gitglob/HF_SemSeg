@@ -29,7 +29,8 @@ class KittiSemSegDataset(Dataset):
     def __init__(self, root_dir, sequence="2013_05_28_drive_0000_sync",
                  train=True,
                  transform=None,
-                 debug=False):
+                 debug=False,
+                 calibration=False):
         self.root_dir = root_dir
 
         # Path to the match file
@@ -52,12 +53,19 @@ class KittiSemSegDataset(Dataset):
         # 90/10 split idx
         split_idx = int(0.9 * len(all_images))
 
-        if train:
+        if train or calibration:
             self.images = all_images[:split_idx]
             self.masks = all_masks[:split_idx]
         else:
             self.images = all_images[split_idx:]
             self.masks = all_masks[split_idx:]
+
+        # If calibration is True, only use 10% of the training dataset for calibration
+        if calibration:
+            np.random.seed(42)
+            indices = np.random.choice(len(self.images), size=int(0.1 * len(self.images)), replace=False)
+            self.images = [self.images[i] for i in indices]
+            self.masks = [self.masks[i] for i in indices]
 
         # Build a lookup table for mapping IDs to trainIds
         self.lut = np.ones(256, dtype=np.uint8)*155  # 256 for all possible uint8 values

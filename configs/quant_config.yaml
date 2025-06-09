@@ -1,0 +1,37 @@
+wandb:
+    enabled: True
+    project: "HF_SemSeg"
+    run_name: ${checkpoint.model_name}
+
+dataset:
+    root: "/home/panos/Documents/data/kitti-360"
+    H: 375
+    W: 1242
+    num_workers: 4
+    num_classes: 33
+
+augmentation:
+    crop_height: 364
+    crop_width: 1232
+
+train:
+    epoch_size: 200
+    accum_steps: 2
+    batch_size: 12
+    learning_rate: 1e-4
+    num_epochs: 20
+
+model:
+    backbone: "facebook/dinov2-base"  # small | base | large
+    freeze_backbone: True
+    patch_size: 14
+    decoder_channels: 256
+    deepsup_layers: [3, 6, 9, 12]
+
+checkpoint:
+    model_name: "dino-fpn-bn"
+    quant_model_name: "dino-fpn-int8"
+    comment: "base model, frozen backbone, fpn head, cropped input"
+
+visualization:
+    attention: False

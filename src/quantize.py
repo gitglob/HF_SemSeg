@@ -124,32 +124,7 @@ def main(cfg: DictConfig):
 
             # Print results
             # plot_results(imgs, masks, preds, miou, cmap, norm)
-
-def print_process_memory():
-    pid = os.getpid()
-    process = psutil.Process(pid)
-    mem_bytes = process.memory_info().rss       # Resident Set Size (bytes)
-    print(f"   [proc] memory (RSS) = {mem_bytes/(1024**2):.1f} MiB")
     
-def print_gpu_stats(gpu_index=0):
-    handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_index)
-    mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-    util    = pynvml.nvmlDeviceGetUtilizationRates(handle)
-    print(f"   [nvidia-smi] GPU{gpu_index}: util={util.gpu}% "
-          f"mem_tot={mem_info.total//(1024**2)} MiB  "
-          f"used={mem_info.used//(1024**2)} MiB  "
-          f"free={mem_info.free//(1024**2)} MiB")
-    
-def print_cpu_stats():
-    # CPU % over all cores
-    cpu_percent = psutil.cpu_percent(interval=None)  # non-blocking snapshot
-    # Total + available + used system memory
-    vm = psutil.virtual_memory()
-    print(f"   [CPU] util: {cpu_percent:.1f}%   "
-          f"mem_total={vm.total/(1024**2):.0f} MiB  "
-          f"mem_used={vm.used/(1024**2):.0f} MiB  "
-          f"mem_free={vm.available/(1024**2):.0f} MiB")
-
 def est_miou(miou_metric, preds, masks):
     # Compute mIoU for the current image
     miou_metric.reset()
@@ -167,18 +142,9 @@ def est_miou(miou_metric, preds, masks):
 
 def inference(model, imgs, device):
     print("Device:", device)
-    if device == "cpu":
-        print_cpu_stats()
-    elif device.startswith("cuda"):
-        print_gpu_stats(0)
 
     model = model.to(device)
     imgs = imgs.to(device)
-
-    if device == "cpu":
-        print_cpu_stats()
-    elif device.startswith("cuda"):
-        print_gpu_stats(0)
 
     # Forward pass with inference time
     torch.cuda.synchronize()

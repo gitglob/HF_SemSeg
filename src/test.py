@@ -18,7 +18,7 @@ cur_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(cur_dir)
 sys.path.append(str(project_root))
 
-from models.DinoFPNhd import DinoFPN
+from models.DinoFPNbn import DinoFPN
 from data.dataset import KittiSemSegDataset
 
 # Device configuration
