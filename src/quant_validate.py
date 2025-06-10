@@ -1,16 +1,12 @@
-import os
 import sys
-import cv2
 from pathlib import Path
 import torch
-import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchmetrics import JaccardIndex
 from tqdm import tqdm
 import albumentations as A
-import wandb
 from hydra import initialize, compose
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 # Add the project root directory to the Python path
 cur_file    = Path(__file__)
@@ -21,42 +17,72 @@ sys.path.append(str(project_dir))
 from models.DinoFPNbn import DinoFPN as DinoSeg
 from models.tools import CombinedLoss
 from data.dataset import KittiSemSegDataset
-from data.labels_kitti360 import trainId2label, NUM_CLASSES
-from utils.visualization import plot_image_and_masks
 
 # Quantization imports
-from torch.ao.quantization import get_default_qconfig, QConfig
+from torch.ao.quantization import QConfig
 from torch.ao.quantization import QConfigMapping
-from torch.ao.quantization.observer import MinMaxObserver, HistogramObserver, PerChannelMinMaxObserver
+from torch.ao.quantization.observer import HistogramObserver, PerChannelMinMaxObserver
 from torch.ao.quantization.quantize_fx import prepare_fx, convert_fx
 from torch.ao.quantization.fx.custom_config import PrepareCustomConfig
 from transformers.models.dinov2.modeling_dinov2 import Dinov2PatchEmbeddings, Dinov2Embeddings
 
 
-def get_memory_footprint_simple(model, detailed=False):
-    """Simplified memory footprint calculation"""
+def get_quant_memory_footprint(model):
+    """Calculate memory footprint for quantized models"""
     
-    # Count total parameters (works for both FP32 and quantized)
-    total_params = sum(p.numel() for p in model.parameters())
-    
-    # For quantized models, assume 1 byte per parameter (int8)
-    # For FP32 models, use 4 bytes per parameter
-    is_quantized = any('quantized' in str(type(m)) for m in model.modules())
-    bytes_per_param = 1 if is_quantized else 4
-    
-    total_bytes = total_params * bytes_per_param
-    
-    if detailed:
-        model_type = "Quantized (INT8)" if is_quantized else "FP32"
-        print(f"=== Model Memory Footprint ===")
-        print(f"Model Type: {model_type}")
-        print(f"Total Parameters: {total_params:,}")
-        print(f"Estimated Size: {total_bytes / (1024**2):.2f} MB")
-        print(f"Bytes per parameter: {bytes_per_param}")
+    # Iterate over the model's modules
+    total_params = 0
+    total_bytes = 0
+    for name, module in model.named_modules():
+        # print(f"Module: {name}, Type: {type(module)}")
+        
+        if 'quantized' in str(type(module)).lower() and hasattr(module, 'weight') and callable(module.weight):
+            # print("\t (quantized)")
+
+            # Extract the weight
+            w = module.weight()
+            b = module.bias() if module.bias is not None else None
+
+            # Extract the weight and bias parameters
+            weight_bytes = w.numel() * w.element_size()
+            bias_bytes = b.numel() * b.element_size() if b is not None else 0
+
+            # Extract the scale and zero point parameters
+            scale = w.q_per_channel_scales() if hasattr(w, 'q_per_channel_scales') else w.q_scale
+            zero_point = w.q_per_channel_zero_points() if hasattr(w, 'q_per_channel_zero_points') else w.q_zero_point
+
+            # Extract the scale and zero point sizes
+            scale_bytes = scale.numel() * scale.element_size() if scale is not None else 0
+            zero_point_bytes = zero_point.numel() * zero_point.element_size() if zero_point is not None else 0
+
+            # Calculate total size in bytes
+            bytes = weight_bytes + bias_bytes + scale_bytes + zero_point_bytes
+            params = w.numel() + (b.numel() if b is not None else 0) + \
+                    (scale.numel() if scale is not None else 0) + \
+                    (zero_point.numel() if zero_point is not None else 0)
+
+            # print(f"Module: {name}, Params: {params}, Size: {bytes / (1024**2):.2f} MB")
+
+            # Add to total bytes and param count
+            total_bytes += bytes
+            total_params += params
+        else:
+            # print("\t (not quantized)")
+
+            # If not quantized, just count the parameters
+            params = sum(p.numel() for p in module.parameters())
+            bytes = sum(p.numel() * p.element_size() for p in module.parameters())
+            # print(f"Module: {name}, Params: {params}, Size: {bytes / (1024**2):.2f} MB")
+
+            # Add to total bytes
+            total_bytes += bytes
+            total_params += params
+
+    print(f"Total memory footprint: {total_params:,} params, {total_bytes / (1024**2):.2f} MB")
     
     return total_bytes
 
-def get_memory_footprint(model, detailed=False):
+def get_memory_footprint(model):
     def get_module_size(module):
         """Helper to get size of a specific module"""
         total_bytes = 0
@@ -69,28 +95,19 @@ def get_memory_footprint(model, detailed=False):
     head_bytes = get_module_size(model.head)
     total_bytes = backbone_bytes + head_bytes
     
-    if detailed:
-        backbone_params = sum(p.numel() for p in model.backbone.parameters())
-        head_params = sum(p.numel() for p in model.head.parameters())
-        
-        print(f"=== Model Memory Footprint ===")
-        print(f"Backbone: {backbone_params:,} params, {backbone_bytes / (1024**2):.2f} MB")
-        print(f"Head:     {head_params:,} params, {head_bytes / (1024**2):.2f} MB")
-        print(f"Total:    {backbone_params + head_params:,} params, {total_bytes / (1024**2):.2f} MB")
+    backbone_params = sum(p.numel() for p in model.backbone.parameters())
+    head_params = sum(p.numel() for p in model.head.parameters())
+    
+    print(f"=== Model Memory Footprint ===")
+    print(f"Backbone: {backbone_params:,} params, {backbone_bytes / (1024**2):.2f} MB")
+    print(f"Head:     {head_params:,} params, {head_bytes / (1024**2):.2f} MB")
+    print(f"Total:    {backbone_params + head_params:,} params, {total_bytes / (1024**2):.2f} MB")
     
     return total_bytes
 
-def create_quantized_model(cfg):
+def create_quantized_model(cfg, fp32_model):
     """Create and load a quantized model"""
-    
-    # 1. Create FP32 model
-    fp32_model = DinoSeg(
-        num_labels=cfg.dataset.num_classes,
-        model_cfg=cfg.model
-    )
-    fp32_model.eval()
-    
-    # 2. Set up quantization config (same as in your notebook)
+    # Set up quantization config
     activation = HistogramObserver.with_args(
         quant_min=0,
         quant_max=255,
@@ -128,7 +145,7 @@ def create_quantized_model(cfg):
         ])
     )
     
-    # 3. Prepare the model for quantization
+    # Prepare the model for quantization
     example_inputs = (torch.randn(1, 3, cfg.augmentation.crop_height, cfg.augmentation.crop_width),)
     prep_model = prepare_fx(
         fp32_model, 
@@ -137,10 +154,10 @@ def create_quantized_model(cfg):
         prepare_custom_config=prepare_custom_config
     )
     
-    # 4. Convert to quantized model
+    # Convert to quantized model
     quant_model = convert_fx(prep_model)
     
-    return quant_model, fp32_model
+    return quant_model
 
 
 def main(cfg: DictConfig, use_quantized=True):
@@ -159,30 +176,42 @@ def main(cfg: DictConfig, use_quantized=True):
                             shuffle=False, num_workers=cfg.dataset.num_workers, pin_memory=True)
     print(f"Validation dataset size: {len(val_dataset)}")
 
-    checkpoint_filename = cfg.checkpoint.model_name + ".pth"
-    checkpoint_path = project_dir / "checkpoints" / checkpoint_filename
+    # Load the fp32 model
+    fp32_model = DinoSeg(
+        num_labels=cfg.dataset.num_classes,
+        model_cfg=cfg.model
+    )
+    fp32_model.eval()
+
+    # Load the main model
     if use_quantized:
+        # Set up the checkpoint path
+        checkpoint_filename = cfg.checkpoint.quant_model_name + ".pth"
+        checkpoint_path = project_dir / "checkpoints" / checkpoint_filename
+
         # Load quantized model
         model_type = "INT8 Quantized"
-        model, fp32_model = create_quantized_model(cfg)
-
-        state_dict = torch.load(checkpoint_path, map_location='cpu')
+        model = create_quantized_model(cfg, fp32_model)
+        state_dict = torch.load(checkpoint_path)
         model.load_state_dict(state_dict)
+
+        # Print memory footprint
+        get_quant_memory_footprint(model)
     else:
+        # Set up the checkpoint path
+        checkpoint_filename = cfg.checkpoint.model_name + ".pth"
+        checkpoint_path = project_dir / "checkpoints" / checkpoint_filename
+
         # Load regular FP32 model
-        model = DinoSeg(
-            num_labels=cfg.dataset.num_classes,
-            model_cfg=cfg.model
-        )
-        fp32_model = model
+        model = fp32_model
         model_type = "FP32"
         state_dict = torch.load(checkpoint_path)
         model.load_state_dict(state_dict["model_state_dict"])
 
-    model = model.to(device)
-    get_memory_footprint_simple(model, detailed=True)
-    breakpoint()
+        # Print memory footprint
+        get_memory_footprint(fp32_model)
 
+    model = model.to(device)
     model.eval()
     criterion = CombinedLoss(alpha=0.8, ignore_index=255)
 
@@ -233,12 +262,12 @@ if __name__ == "__main__":
         config_path=f"../configs", 
         job_name="validate_quantized"
     ):
-        # # Run validation on FP32 for comparison
-        # cfg = compose(config_name="config")
-        # print("\n=== Validating FP32 Model (for comparison) ===")
-        # main(cfg, use_quantized=False)
-        
         # Run validation on quantized model
         cfg = compose(config_name="quant_config")
         print("=== Validating Quantized Model ===")
         main(cfg, use_quantized=True)
+
+        # Run validation on FP32 for comparison
+        cfg = compose(config_name="config")
+        print("\n=== Validating FP32 Model (for comparison) ===")
+        main(cfg, use_quantized=False)
