@@ -82,29 +82,6 @@ def get_quant_memory_footprint(model):
     
     return total_bytes
 
-def get_memory_footprint(model):
-    def get_module_size(module):
-        """Helper to get size of a specific module"""
-        total_bytes = 0
-        for param in module.parameters():
-            total_bytes += param.numel() * param.element_size() # number of elements * size of each element in bytes
-        return total_bytes
-    
-    # Get sizes for each major component
-    backbone_bytes = get_module_size(model.backbone)
-    head_bytes = get_module_size(model.head)
-    total_bytes = backbone_bytes + head_bytes
-    
-    backbone_params = sum(p.numel() for p in model.backbone.parameters())
-    head_params = sum(p.numel() for p in model.head.parameters())
-    
-    print(f"=== Model Memory Footprint ===")
-    print(f"Backbone: {backbone_params:,} params, {backbone_bytes / (1024**2):.2f} MB")
-    print(f"Head:     {head_params:,} params, {head_bytes / (1024**2):.2f} MB")
-    print(f"Total:    {backbone_params + head_params:,} params, {total_bytes / (1024**2):.2f} MB")
-    
-    return total_bytes
-
 def create_quantized_model(cfg, fp32_model):
     """Create and load a quantized model"""
     # Set up quantization config
@@ -183,33 +160,18 @@ def main(cfg: DictConfig, use_quantized=True):
     )
     fp32_model.eval()
 
-    # Load the main model
-    if use_quantized:
-        # Set up the checkpoint path
-        checkpoint_filename = cfg.checkpoint.quant_model_name + ".pth"
-        checkpoint_path = project_dir / "checkpoints" / checkpoint_filename
+    # Set up the checkpoint path
+    checkpoint_filename = cfg.checkpoint.quant_model_name + ".pth"
+    checkpoint_path = project_dir / "checkpoints" / checkpoint_filename
 
-        # Load quantized model
-        model_type = "INT8 Quantized"
-        model = create_quantized_model(cfg, fp32_model)
-        state_dict = torch.load(checkpoint_path)
-        model.load_state_dict(state_dict)
+    # Load quantized model
+    model_type = "INT8 Quantized"
+    model = create_quantized_model(cfg, fp32_model)
+    state_dict = torch.load(checkpoint_path)
+    model.load_state_dict(state_dict)
 
-        # Print memory footprint
-        get_quant_memory_footprint(model)
-    else:
-        # Set up the checkpoint path
-        checkpoint_filename = cfg.checkpoint.model_name + ".pth"
-        checkpoint_path = project_dir / "checkpoints" / checkpoint_filename
-
-        # Load regular FP32 model
-        model = fp32_model
-        model_type = "FP32"
-        state_dict = torch.load(checkpoint_path)
-        model.load_state_dict(state_dict["model_state_dict"])
-
-        # Print memory footprint
-        get_memory_footprint(fp32_model)
+    # Print memory footprint
+    get_quant_memory_footprint(model)
 
     model = model.to(device)
     model.eval()
@@ -263,11 +225,6 @@ if __name__ == "__main__":
         job_name="validate_quantized"
     ):
         # Run validation on quantized model
-        cfg = compose(config_name="quant_config")
+        cfg = compose(config_name="ptq_config")
         print("=== Validating Quantized Model ===")
-        main(cfg, use_quantized=True)
-
-        # Run validation on FP32 for comparison
-        cfg = compose(config_name="config")
-        print("\n=== Validating FP32 Model (for comparison) ===")
-        main(cfg, use_quantized=False)
+        main(cfg)

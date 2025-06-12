@@ -7,17 +7,36 @@ import sys
 from pathlib import Path
 
 import torch
-import numpy as np
 import pynvml
-import matplotlib.pyplot as plt
-from matplotlib.colors import BoundaryNorm
 from torch.utils.data import DataLoader
 from torchmetrics import JaccardIndex
+
+import torch.quantization as tq
 from torch.quantization import quantize_dynamic
+from torch.ao.quantization.quantize_fx import prepare_qat_fx
+from torch.ao.quantization.quantize_fx import convert_fx
+from torch.ao.quantization import QConfig, QConfigMapping
+from torch.ao.quantization.observer import PerChannelMinMaxObserver, HistogramObserver, MinMaxObserver
+from torch.ao.quantization.fake_quantize import FakeQuantize
+from torch.ao.quantization._learnable_fake_quantize import _LearnableFakeQuantize as LearnableFakeQuantize
+from torch.ao.quantization.fx.custom_config import PrepareCustomConfig
+from transformers.models.dinov2.modeling_dinov2 import Dinov2PatchEmbeddings, Dinov2Embeddings
 
 from hydra import compose, initialize
 from omegaconf import DictConfig
-from albumentations.pytorch import ToTensorV2
+
+# Initialize NVML for GPU queries
+pynvml.nvmlInit()
+
+# Add project root to path (so that `models` and `data` can be imported)
+cur_dir = Path(__file__).parent
+project_dir = cur_dir.parent
+sys.path.append(str(project_dir))
+
+from models.DinoFPNbn import DinoFPN
+from data.dataset import KittiSemSegDataset
+from utils.others import get_memory_footprint, get_quant_memory_footprint
+
 
 # ────────────────────────────────────────────────────────────────────────────────
 # This script runs inference on both the original and quantized DinoFPN model
@@ -36,34 +55,32 @@ from albumentations.pytorch import ToTensorV2
 # ────────────────────────────────────────────────────────────────────────────────
 
 """
-Results:
-Quantization on CPU performance:
+Results - Quantization on CPU performance:
+
 Original model:
-    mIoU: ~ 0.81
+    Size: 90,328,097 params, 344.57 MB
+    mIoU: ~ 0.85
     GPU:
         Inference time: ~ 0.46 sec
         Power draw:     ~ 20.0 J
     CPU:
-        Inference time: ~ 1.90 sec
+        Inference time: ~ 1.9 sec
         Power draw:     ~ 90 J
-Quantized model:
-    mIoU: ~ 0.61
+
+Quantized model (Dynamic INT8):
+    Size: (didn't compute size, should be close to the QAT model)
+    mIoU: ~ 0.79
     CPU:
-        Inference time: ~ 1.45 sec
+        Inference time: ~ 1.4 sec
+        Power draw:     ~ 67 J
+
+QAT Quantized model (INT8):
+    Size: 94,686,819 params, 108.13 MB
+    mIoU: ~ 0.84
+    CPU:
+        Inference time: ~ 1.4 sec
         Power draw:     ~ 67 J
 """
-
-
-# Initialize NVML for GPU queries
-pynvml.nvmlInit()
-
-# Add project root to path (so that `models` and `data` can be imported)
-cur_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(cur_dir)
-sys.path.append(project_root)
-
-from models.DinoFPNhd import DinoFPN
-from data.dataset import KittiSemSegDataset
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Hyperparameters
@@ -216,6 +233,258 @@ def run_inference_and_log(model, imgs, masks, device, miou_metric):
         "gpu_mem_free_after_mib":     gpu_free_after,
     }
 
+def create_qat_model_structure(fp32_model):
+    """Create and prepare a QAT model identical to the notebook"""    
+    # Build MinMax observer for weights
+    ch_qat_weight = PerChannelMinMaxObserver.with_args(
+            dtype=torch.qint8,
+            qscheme=torch.per_channel_symmetric,
+            reduce_range=False,
+            ch_axis=0
+    )
+    tensor_qat_weight = MinMaxObserver.with_args(
+            dtype=torch.qint8,
+            qscheme=torch.per_tensor_symmetric,
+            reduce_range=False
+    )
+
+    # - Build a histogram (KL) observer for activations
+    activation_obs = HistogramObserver.with_args(
+        dtype=torch.quint8,
+        qscheme=torch.per_tensor_affine,
+        reduce_range=False
+    )
+    
+    qat_activation = FakeQuantize.with_args(
+        observer=activation_obs
+    )
+
+    custom_qconfig = QConfig(
+        activation=qat_activation, 
+        weight=tq.default_fused_per_channel_wt_fake_quant
+    )
+
+    l0_qconfig = QConfig(
+        activation=qat_activation, 
+        weight=tensor_qat_weight
+    )
+    head_qconfig = QConfig(
+        activation=qat_activation, 
+        weight=ch_qat_weight
+    )
+
+    qconfig_map = (
+        QConfigMapping()
+        .set_global(custom_qconfig)                   # applies to all modules by default
+        .set_module_name("backbone.embeddings", None)  # disable quant for embeddings
+        # .set_module_name("backbone.embeddings.patch_embeddings", None)
+        # CRITICAL LAYERS: Use learnable quantization
+        .set_module_name("backbone.encoder.layer.0.attention.query", l0_qconfig)
+        .set_module_name("backbone.encoder.layer.0.attention.key", l0_qconfig)
+        .set_module_name("backbone.encoder.layer.0.attention.value", l0_qconfig)
+        .set_module_name("backbone.head.classifier", head_qconfig)
+        # Exclude normalization layers
+        .set_object_type(torch.nn.LayerNorm, None)
+        .set_object_type(torch.nn.BatchNorm2d, None)
+        .set_object_type(torch.nn.GroupNorm, None)
+        # Exclude dropout layers
+        .set_object_type(torch.nn.Dropout, None)
+        # Exclude operations that return non-tensor objects
+        .set_object_type("size", None)
+        .set_object_type("view", None)
+        .set_object_type("reshape", None)
+        .set_object_type("permute", None)
+        .set_object_type(torch.Tensor.size, None)
+        .set_object_type(torch.Tensor.view, None)
+        .set_object_type(torch.Tensor.reshape, None)
+        .set_object_type(torch.Tensor.permute, None)
+    )
+    print("QConfig mapping created.")
+    
+    # Prepare custom config (identical to notebook)
+    prepare_custom_config = (
+        PrepareCustomConfig()
+        .set_non_traceable_module_classes([
+            Dinov2PatchEmbeddings, 
+            Dinov2Embeddings
+        ])
+        # Exclude tensor operations that don't need quantization
+        .set_preserved_attributes([
+            "size", "view", "reshape", "permute", 
+            "transpose", "contiguous", "flatten"
+        ])
+    )
+    print("Custom prepare config set for non-traceable modules.")
+    
+    # Prepare model for QAT
+    example_inputs = (torch.randn(1, 3, 364, 1232),)
+    prep_model = prepare_qat_fx(
+        fp32_model, 
+        qconfig_map, 
+        example_inputs,
+        prepare_custom_config=prepare_custom_config
+    )    
+    print(f"QAT model prepared")
+    
+    return prep_model
+
+def create_qat_model(cfg):
+    # Build the FP32 model
+    fp32_model = DinoFPN(
+        num_labels=cfg.dataset.num_classes, 
+        model_cfg=cfg.model
+    )
+    print("Loaded FP32 model.")
+
+    # Build MinMax observer for weights
+    learnable_ch_qat_weight = LearnableFakeQuantize.with_args(
+        observer=PerChannelMinMaxObserver.with_args(
+            dtype=torch.qint8,
+            qscheme=torch.per_channel_symmetric,
+            reduce_range=False,
+            ch_axis=0
+        ),
+        quant_min=-128,
+        quant_max=127,
+        dtype=torch.qint8,
+        qscheme=torch.per_channel_symmetric,
+        ch_axis=0
+    )
+    learnable_tensor_qat_weight = LearnableFakeQuantize.with_args(
+        observer=MinMaxObserver.with_args(
+            dtype=torch.qint8,
+            qscheme=torch.per_tensor_symmetric,
+            reduce_range=False
+        ),
+        quant_min=-128,
+        quant_max=127,
+        dtype=torch.qint8,
+        qscheme=torch.per_tensor_symmetric,
+        scale=1.0,        
+        zero_point=0.0    
+    )
+
+    # - Build a histogram (KL) observer for activations
+    activation_obs = HistogramObserver.with_args(
+        dtype=torch.quint8,
+        qscheme=torch.per_tensor_affine,
+        reduce_range=False
+    )
+
+    learnable_qat_activation = LearnableFakeQuantize.with_args(
+        observer=activation_obs,
+        quant_min=0,
+        quant_max=255,
+        dtype=torch.quint8,
+        qscheme=torch.per_tensor_affine,
+        reduce_range=False,
+        scale=1.0,
+        zero_point=128.0
+    )
+    qat_activation = FakeQuantize.with_args(
+        observer=activation_obs
+    )
+
+    custom_qconfig = QConfig(
+        activation=qat_activation, 
+        weight=tq.default_fused_per_channel_wt_fake_quant
+    )
+    learnable_l0_qconfig = QConfig(
+        activation=learnable_qat_activation, 
+        weight=learnable_tensor_qat_weight
+    )
+    learnable_head_qconfig = QConfig(
+        activation=learnable_qat_activation, 
+        weight=learnable_ch_qat_weight
+    )
+
+    qconfig_map = (
+        QConfigMapping()
+        .set_global(custom_qconfig)                   # applies to all modules by default
+        .set_module_name("backbone.embeddings", None)  # disable quant for embeddings
+        # .set_module_name("backbone.embeddings.patch_embeddings", None)
+        # CRITICAL LAYERS: Use learnable quantization
+        .set_module_name("backbone.encoder.layer.0.attention.query", learnable_l0_qconfig)
+        .set_module_name("backbone.encoder.layer.0.attention.key", learnable_l0_qconfig)
+        .set_module_name("backbone.encoder.layer.0.attention.value", learnable_l0_qconfig)
+        .set_module_name("backbone.head.classifier", learnable_head_qconfig)
+        # Exclude normalization layers
+        .set_object_type(torch.nn.LayerNorm, None)
+        .set_object_type(torch.nn.BatchNorm2d, None)
+        .set_object_type(torch.nn.GroupNorm, None)
+        # Exclude dropout layers
+        .set_object_type(torch.nn.Dropout, None)
+        # Exclude operations that return non-tensor objects
+        .set_object_type("size", None)
+        .set_object_type("view", None)
+        .set_object_type("reshape", None)
+        .set_object_type("permute", None)
+        .set_object_type(torch.Tensor.size, None)
+        .set_object_type(torch.Tensor.view, None)
+        .set_object_type(torch.Tensor.reshape, None)
+        .set_object_type(torch.Tensor.permute, None)
+    )
+    print("QConfig mapping created.")
+
+
+    # Tell FX to treat Dinov2PatchEmbeddings and Dinov2Embeddings as non-traceable
+    ## “Whenever you hit SomeModule in the model, don’t open it up and record its internal steps. 
+    ## Instead just treat the whole call as a single step in the recipe
+    prepare_custom_config = (
+        PrepareCustomConfig()
+        .set_non_traceable_module_classes([
+            Dinov2PatchEmbeddings, 
+            Dinov2Embeddings
+        ])
+        # Exclude tensor operations that don't need quantization
+        .set_preserved_attributes([
+            "size", "view", "reshape", "permute", 
+            "transpose", "contiguous", "flatten"
+        ])
+    )
+    print("Custom prepare config set for non-traceable modules.")
+
+    # Load your best FP32 checkpoint into `quant_model.fp32_model`
+    ckpt_path = os.path.join(project_dir, "checkpoints", f"{cfg.checkpoint.model_name}.pth")
+    if not os.path.exists(ckpt_path):
+        print(f"[Error] Checkpoint not found: {ckpt_path}")
+    checkpoint = torch.load(ckpt_path, map_location="cpu")
+    fp32_model.load_state_dict(checkpoint["model_state_dict"])
+    print(f"Loaded FP32 weights from {ckpt_path} into fp32_model.")
+
+    # Prepare the model for static quantization
+    example_inputs = (torch.randn(1, 3, 364, 1232),)
+    prep_model = prepare_qat_fx(
+        fp32_model, 
+        qconfig_map, 
+        example_inputs,
+        prepare_custom_config=prepare_custom_config
+    )
+    prep_model = prep_model.to("cpu")
+    print("Prepared model for QAT.")
+
+    return prep_model
+
+def load_qat_model(model_path, fp32_model):
+    """Load a saved quantized INT8 model"""    
+    # First create the QAT model
+    prep_model = create_qat_model_structure(fp32_model)  # Always prepare on CPU
+    
+    # Load the saved quantized weights
+    if Path(model_path).exists():
+        state_dict = torch.load(model_path)
+        prep_model.load_state_dict(state_dict)
+        print(f"Loaded quantized model from {model_path}")
+    else:
+        print(f"Warning: {model_path} not found, returning freshly converted model")
+    
+    # Convert to quantized model
+    prep_model.eval()
+    prep_model = prep_model.to("cpu")
+    quant_model = convert_fx(prep_model)
+    
+    return quant_model
+
 # ────────────────────────────────────────────────────────────────────────────────
 def main(cfg: DictConfig):
     # Dataset + DataLoader
@@ -229,25 +498,28 @@ def main(cfg: DictConfig):
 
     # Initialize original model & load checkpoint
     model = DinoFPN(num_labels=cfg.dataset.num_classes, model_cfg=cfg.model)
-    checkpoint_path = f"checkpoints/{cfg.checkpoint.model_name}.pth"
-    if not os.path.exists(checkpoint_path):
-        print(f"Checkpoint not found at {checkpoint_path}")
-        return
-
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint_path = project_dir / "checkpoints" / "dino-fpn-bn.pth"
+    checkpoint = torch.load(checkpoint_path)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     print(f"Loaded original model from {checkpoint_path}")
+    get_memory_footprint(model)
 
     # Create quantized model (dynamic quantization)
-    qmodel = quantize_dynamic(
+    qdyn_model = quantize_dynamic(
         model,
         {torch.nn.Linear, torch.nn.Conv2d},
         dtype=torch.qint8,
         inplace=False
     )
-    qmodel.eval()
+    qdyn_model.eval()
     print("Created quantized version of the model (INT8 dynamic).")
+
+    # Create QAT quantized model
+    model_path = project_dir / "checkpoints" / f"dino-fpn-qat-int8.pth"
+    qat_model = load_qat_model(model_path, model)
+    print("Created QAT quantized version of the model (INT8).")
+    get_quant_memory_footprint(qat_model)
 
     # Prepare mIoU metric
     miou_metric = JaccardIndex(
@@ -261,7 +533,6 @@ def main(cfg: DictConfig):
     psutil.cpu_percent(interval=None)
 
     # Prepare CSV logging
-    project_dir = Path(project_root)
     csv_path = project_dir / "logs" / "inference_metrics_log.csv"
     header = [
         "idx",
@@ -299,6 +570,7 @@ def main(cfg: DictConfig):
             for idx, (imgs, masks) in enumerate(val_loader):
                 # Convert imgs from [B, H, W, C] → [B, C, H, W]
                 imgs = imgs.permute(0, 3, 1, 2)  # shape: [1, 3, H, W]
+                imgs = model.process(imgs)
 
                 print(f"\n=== Processing sample {idx + 1}/{len(val_loader)} ===")
 
@@ -317,9 +589,15 @@ def main(cfg: DictConfig):
                 else:
                     print("Skipping GPU run (no CUDA available).")
 
-                # 3) Quantized model on CPU
-                row = {"idx": idx, "model_type": "quantized", "device": "cpu"}
-                metrics = run_inference_and_log(qmodel, imgs, masks, "cpu", miou_metric)
+                # 3) Dynamically Quantized model on CPU
+                row = {"idx": idx, "model_type": "dyn-quantized", "device": "cpu"}
+                metrics = run_inference_and_log(qdyn_model, imgs, masks, "cpu", miou_metric)
+                row.update(metrics)
+                writer.writerow(row)
+
+                # 4) QAT Quantized model on CPU
+                row = {"idx": idx, "model_type": "qat-quantized", "device": "cpu"}
+                metrics = run_inference_and_log(qat_model, imgs, masks, "cpu", miou_metric)
                 row.update(metrics)
                 writer.writerow(row)
 

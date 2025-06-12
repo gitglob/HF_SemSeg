@@ -1,6 +1,6 @@
-import os
 import sys
 import cv2
+from pathlib import Path
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -12,9 +12,9 @@ from hydra import initialize, compose
 from omegaconf import DictConfig, OmegaConf
 
 # Add the project root directory to the Python path
-cur_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(cur_dir)
-sys.path.append(str(project_root))
+cur_dir     = Path(__file__).parent
+project_dir = cur_dir.parent
+sys.path.append(str(project_dir))
 
 from models.DinoFPNbn import DinoFPN as DinoSeg
 from models.tools import CombinedLoss
@@ -22,7 +22,6 @@ from data.dataset import KittiSemSegDataset
 from data.labels_kitti360 import trainId2label, NUM_CLASSES
 from utils.visualization import plot_image_and_masks
 from utils.others import save_checkpoint, load_checkpoint
-
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
@@ -130,8 +129,8 @@ def main(cfg: DictConfig):
         # Iterate over the training dataset
         train_bar = tqdm(train_loader, desc=f"[Epoch {epoch}] Train")
         for batch_idx, (imgs, masks) in enumerate(train_bar, start=1):
-            imgs = imgs.permute(0, 3, 1, 2).to(device)  # [B, H, W, C] -> [B, C, H, W]
-            input = model.process(imgs)
+            imgs = imgs.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
+            input = model.process(imgs).to(device)
 
             # Zero the gradients
             optimizer.zero_grad()
@@ -143,13 +142,20 @@ def main(cfg: DictConfig):
             masks = masks.to(device)  # [B, H, W]
             loss = criterion(logits, masks.long())
 
+            # scale the loss down so that gradients accumulate correctly
+            loss = loss / cfg.train.accum_steps
+
             # compute IoU
             preds = torch.argmax(logits, dim=1)  # [B, H, W]
             miou_metric.update(preds, masks)
 
             # Compute gradients and step the optimizer
             loss.backward()
-            optimizer.step()
+
+            # every accum_steps, step & zero_grad
+            if batch_idx % cfg.train.accum_steps == 0:
+                optimizer.step()
+                optimizer.zero_grad()
 
             # accumulate losses
             running_train_loss += loss.item()
@@ -171,8 +177,8 @@ def main(cfg: DictConfig):
         with torch.no_grad():
             val_bar = tqdm(val_loader, desc=f"[Epoch {epoch}/{cfg.train.num_epochs}]  Val")
             for batch_idx, (imgs, masks) in enumerate(val_bar, start=1):
-                imgs = imgs.permute(0, 3, 1, 2).to(device)  # [B, H, W, C] -> [B, C, H, W]
-                input = model.process(imgs)
+                imgs = imgs.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
+                input = model.process(imgs).to(device)
 
                 # forward + loss
                 logits = model(input)

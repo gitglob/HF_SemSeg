@@ -16,9 +16,9 @@ augmentation:
 
 train:
     epoch_size: 200
-    accum_steps: 1
-    batch_size: 12
-    learning_rate: 1e-3
+    accum_steps: 2
+    batch_size: 8
+    learning_rate: 1e-4
     num_epochs: 20
 
 model:
@@ -30,6 +30,7 @@ model:
 
 checkpoint:
     model_name: "dino-fpn-bn"
+    quant_model_name: "dino-fpn-int8"
     comment: "base model, frozen backbone, fpn head, cropped input"
 
 visualization:

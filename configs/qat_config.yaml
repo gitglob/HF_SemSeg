@@ -15,11 +15,12 @@ augmentation:
     crop_width: 1232
 
 train:
-    epoch_size: 200
+    epoch_size: 20
     accum_steps: 2
-    batch_size: 12
+    batch_size: 8
     learning_rate: 1e-4
-    num_epochs: 20
+    num_epochs: 100
+    batches_per_epoch: 100
 
 model:
     backbone: "facebook/dinov2-base"  # small | base | large
@@ -30,7 +31,7 @@ model:
 
 checkpoint:
     model_name: "dino-fpn-bn"
-    quant_model_name: "dino-fpn-int8"
+    quant_model_name: "dino-fpn-qat-int8"
     comment: "base model, frozen backbone, fpn head, cropped input"
 
 visualization:
