@@ -14,6 +14,9 @@ papers
 # Output
 results
 
+# ONNX
+onnx_models
+
 # Model checkpoints
 checkpoints
 
