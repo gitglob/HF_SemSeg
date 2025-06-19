@@ -142,30 +142,6 @@ class DinoFPN(nn.Module):
     def load_pretrained_weights(self, weight_path):
         self.load_state_dict(torch.load(weight_path, map_location='cpu'))
 
-    def get_memory_footprint(self, detailed=False):
-        def get_module_size(module):
-            """Helper to get size of a specific module"""
-            total_bytes = 0
-            for param in module.parameters():
-                total_bytes += param.numel() * param.element_size() # number of elements * size of each element in bytes
-            return total_bytes
-        
-        # Get sizes for each major component
-        backbone_bytes = get_module_size(self.backbone)
-        head_bytes = get_module_size(self.head)
-        total_bytes = backbone_bytes + head_bytes
-        
-        if detailed:
-            backbone_params = sum(p.numel() for p in self.backbone.parameters())
-            head_params = sum(p.numel() for p in self.head.parameters())
-            
-            print(f"=== Model Memory Footprint ===")
-            print(f"Backbone: {backbone_params:,} params, {backbone_bytes / (1024**2):.2f} MB")
-            print(f"Head:     {head_params:,} params, {head_bytes / (1024**2):.2f} MB")
-            print(f"Total:    {backbone_params + head_params:,} params, {total_bytes / (1024**2):.2f} MB")
-        
-        return total_bytes
-
 def main(cfg):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")

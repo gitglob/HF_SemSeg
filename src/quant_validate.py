@@ -8,6 +8,14 @@ import albumentations as A
 from hydra import initialize, compose
 from omegaconf import DictConfig
 
+# Quantization imports
+from torch.ao.quantization import QConfig
+from torch.ao.quantization import QConfigMapping
+from torch.ao.quantization.observer import HistogramObserver, PerChannelMinMaxObserver
+from torch.ao.quantization.quantize_fx import prepare_fx, convert_fx
+from torch.ao.quantization.fx.custom_config import PrepareCustomConfig
+from transformers.models.dinov2.modeling_dinov2 import Dinov2PatchEmbeddings, Dinov2Embeddings
+
 # Add the project root directory to the Python path
 cur_file    = Path(__file__)
 cur_dir     = cur_file.parent
@@ -17,70 +25,8 @@ sys.path.append(str(project_dir))
 from models.DinoFPNbn import DinoFPN as DinoSeg
 from models.tools import CombinedLoss
 from data.dataset import KittiSemSegDataset
+from utils.others import get_quant_memory_footprint
 
-# Quantization imports
-from torch.ao.quantization import QConfig
-from torch.ao.quantization import QConfigMapping
-from torch.ao.quantization.observer import HistogramObserver, PerChannelMinMaxObserver
-from torch.ao.quantization.quantize_fx import prepare_fx, convert_fx
-from torch.ao.quantization.fx.custom_config import PrepareCustomConfig
-from transformers.models.dinov2.modeling_dinov2 import Dinov2PatchEmbeddings, Dinov2Embeddings
-
-
-def get_quant_memory_footprint(model):
-    """Calculate memory footprint for quantized models"""
-    
-    # Iterate over the model's modules
-    total_params = 0
-    total_bytes = 0
-    for name, module in model.named_modules():
-        # print(f"Module: {name}, Type: {type(module)}")
-        
-        if 'quantized' in str(type(module)).lower() and hasattr(module, 'weight') and callable(module.weight):
-            # print("\t (quantized)")
-
-            # Extract the weight
-            w = module.weight()
-            b = module.bias() if module.bias is not None else None
-
-            # Extract the weight and bias parameters
-            weight_bytes = w.numel() * w.element_size()
-            bias_bytes = b.numel() * b.element_size() if b is not None else 0
-
-            # Extract the scale and zero point parameters
-            scale = w.q_per_channel_scales() if hasattr(w, 'q_per_channel_scales') else w.q_scale
-            zero_point = w.q_per_channel_zero_points() if hasattr(w, 'q_per_channel_zero_points') else w.q_zero_point
-
-            # Extract the scale and zero point sizes
-            scale_bytes = scale.numel() * scale.element_size() if scale is not None else 0
-            zero_point_bytes = zero_point.numel() * zero_point.element_size() if zero_point is not None else 0
-
-            # Calculate total size in bytes
-            bytes = weight_bytes + bias_bytes + scale_bytes + zero_point_bytes
-            params = w.numel() + (b.numel() if b is not None else 0) + \
-                    (scale.numel() if scale is not None else 0) + \
-                    (zero_point.numel() if zero_point is not None else 0)
-
-            # print(f"Module: {name}, Params: {params}, Size: {bytes / (1024**2):.2f} MB")
-
-            # Add to total bytes and param count
-            total_bytes += bytes
-            total_params += params
-        else:
-            # print("\t (not quantized)")
-
-            # If not quantized, just count the parameters
-            params = sum(p.numel() for p in module.parameters())
-            bytes = sum(p.numel() * p.element_size() for p in module.parameters())
-            # print(f"Module: {name}, Params: {params}, Size: {bytes / (1024**2):.2f} MB")
-
-            # Add to total bytes
-            total_bytes += bytes
-            total_params += params
-
-    print(f"Total memory footprint: {total_params:,} params, {total_bytes / (1024**2):.2f} MB")
-    
-    return total_bytes
 
 def create_quantized_model(cfg, fp32_model):
     """Create and load a quantized model"""
