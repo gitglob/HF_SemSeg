@@ -74,6 +74,7 @@ def get_memory_footprint(model, detailed=False):
     
     backbone_params = sum(p.numel() for p in model.backbone.parameters())
     head_params = sum(p.numel() for p in model.head.parameters())
+    total_params = backbone_params + head_params
     
     print(f"=== Model Memory Footprint ===")
     if detailed:
@@ -81,7 +82,7 @@ def get_memory_footprint(model, detailed=False):
         print(f"Head:     {head_params:,} params, {head_bytes / (1024**2):.2f} MB")
     print(f"Total:    {backbone_params + head_params:,} params, {total_bytes / (1024**2):.2f} MB")
     
-    return total_bytes
+    return total_params, total_bytes
 
 def get_cls_attention_map(attentions, H, W, patch_size):
     att = attentions[-1]            # Get the attention map from the last attention layer (batch_size, num_heads, seq_len, seq_len)
@@ -99,19 +100,25 @@ def get_cls_attention_map(attentions, H, W, patch_size):
 
     return cls_map
 
-def save_checkpoint(model, optimizer, epoch, best_val_miou, checkpoint_cfg, scheduler):
+def save_checkpoint(model, optimizer, epoch, best_val_miou, checkpoint_cfg, save_path=None, scheduler=None):
     """Save model, optimizer, epoch, and best_val_miou to a checkpoint."""
-    checkpoint_path = f"checkpoints/" + checkpoint_cfg.model_name + ".pth"
-    torch.save({
+    checkpoint_path = save_path if save_path else f"checkpoints/" + checkpoint_cfg.model_name + ".pth"
+    checkpoint_data = {
         "model_name": checkpoint_cfg.model_name,
         "comment": checkpoint_cfg.comment,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
-        "scheduler_state_dict": scheduler.state_dict(),
         "epoch": epoch,
         "best_val_miou": best_val_miou
-    }, checkpoint_path)
-    print(f"Checkpoint saved at epoch {epoch} with mIoU={best_val_miou:.4f} and lr={scheduler.get_last_lr()[0]:.6f}")
+    }
+    
+    if scheduler is not None:
+        checkpoint_data["scheduler_state_dict"] = scheduler.state_dict()
+    
+    torch.save(checkpoint_data, checkpoint_path)
+    
+    lr_info = f" and lr={scheduler.get_last_lr()[0]:.6f}" if scheduler is not None else ""
+    print(f"Checkpoint saved in {checkpoint_path} at epoch {epoch} with mIoU={best_val_miou:.4f}{lr_info}")
 
 def load_checkpoint(model, optimizer=None, checkpoint_cfg=None, scheduler=None):
     """Load model, optimizer, epoch, and best_val_miou from a checkpoint."""
@@ -121,15 +128,17 @@ def load_checkpoint(model, optimizer=None, checkpoint_cfg=None, scheduler=None):
         model.load_state_dict(checkpoint["model_state_dict"])
         if optimizer is not None:
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        # if scheduler is not None:
-        #     scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        if scheduler is not None:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         epoch = checkpoint["epoch"]
         best_val_miou = checkpoint["best_val_miou"]
-        print(f"Checkpoint loaded: Resuming from epoch {epoch} with mIoU={best_val_miou:.4f} and lr={scheduler.get_last_lr()[0]:.6f}")
-        return epoch, best_val_miou
+        
+        lr_info = f" and lr={scheduler.get_last_lr()[0]:.6f}" if scheduler is not None else ""
+        print(f"Checkpoint loaded: Resuming from epoch {epoch} with mIoU={best_val_miou:.4f}{lr_info}")
+        return epoch
     else:
         print("No checkpoint found. Starting from scratch.")
-        return 1, 0.0
+        return 1
 
 def print_model_and_gpu_stats(model, device=torch.device('cuda:0')):
     # 1) Estimate model size on GPU (parameters only, in MB)

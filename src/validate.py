@@ -28,6 +28,39 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
 
+def evaluate_model(model, loader, criterion, metric, device):
+    ####### VALIDATION #######
+    model.eval()
+    running_val_loss = 0.0
+    metric.reset()
+
+    with torch.no_grad():
+        for batch_idx, (imgs, masks) in enumerate(tqdm(loader)):
+            imgs = imgs.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
+            imgs = model.process(imgs).to(device)
+
+            # forward + loss
+            logits = model(imgs)
+
+            # Loss
+            masks = masks.to(device)  # [B, H, W]
+            loss = criterion(logits, masks.long())
+
+            # accumulate losses
+            running_val_loss += loss.item()
+
+            # compute IoU on this batch
+            preds = torch.argmax(logits, dim=1)  # [B, H, W]
+            metric.update(preds, masks)
+
+        avg_val_loss = running_val_loss / len(loader)
+        avg_val_miou = metric.compute().item()
+
+        ####### PRINT & CHECKPOINT #######
+        print(f"\n  Val   Loss: {avg_val_loss:.4f} | mIoU: {avg_val_miou:.4f}")
+
+    return avg_val_miou
+
 def main(cfg: DictConfig):
     crop_size = (cfg.augmentation.crop_height, cfg.augmentation.crop_width)
     val_transform = A.Compose([
@@ -64,35 +97,8 @@ def main(cfg: DictConfig):
     # Load the best model if it exists
     load_checkpoint(model, optimizer, cfg.checkpoint, scheduler)
 
-    ####### VALIDATION #######
-    model.eval()
-    running_val_loss = 0.0
-    miou_metric.reset()
+    evaluate_model(model, val_loader, criterion, miou_metric)
 
-    with torch.no_grad():
-        for batch_idx, (imgs, masks) in enumerate(tqdm(val_loader)):
-            imgs = imgs.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
-            imgs = model.process(imgs)
-
-            # forward + loss
-            logits = model(imgs)
-
-            # Loss
-            masks = masks.to(device)  # [B, H, W]
-            loss = criterion(logits, masks.long())
-
-            # accumulate losses
-            running_val_loss += loss.item()
-
-            # compute IoU on this batch
-            preds = torch.argmax(logits, dim=1)  # [B, H, W]
-            miou_metric.update(preds, masks)
-
-        avg_val_loss = running_val_loss / len(val_loader)
-        avg_val_miou = miou_metric.compute().item()
-
-        ####### PRINT & CHECKPOINT #######
-        print(f"\n  Val   Loss: {avg_val_loss:.4f} | mIoU: {avg_val_miou:.4f}")
 
 if __name__ == "__main__":
     with initialize(

@@ -88,6 +88,8 @@ class DinoFPN(nn.Module):
         self.processor = AutoImageProcessor.from_pretrained(BACKBONE_MODEL, use_fast=False, token=True)
         self.processor.do_resize = False
         self.processor.do_center_crop = False
+        # self.processor.crop_size["height"] = 364
+        # self.processor.crop_size["width"] = 1232
 
         # Backbone
         self.backbone = AutoModel.from_pretrained(BACKBONE_MODEL, token=True)

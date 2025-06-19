@@ -4,6 +4,7 @@ from pathlib import Path
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.nn.utils import prune
 from torchmetrics import JaccardIndex
 from tqdm import tqdm
 import albumentations as A
@@ -25,6 +26,38 @@ from utils.others import save_checkpoint, load_checkpoint
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
+
+def apply_global_pruning(model, pruning_ratio=0.3, exclude_layers=True):
+    """Global pruning with critical layer protection"""
+    
+    parameters_to_prune = []
+    excluded_layers = []
+    
+    for name, module in model.named_modules():
+        if hasattr(module, 'weight') and module.weight is not None:
+            # Exclude critical layers
+            if exclude_layers:
+                if any(exclude in name for exclude in ['norm', 'BatchNorm2d', 'layernorm', 'classifier.4']) or \
+                isinstance(module, (torch.nn.BatchNorm2d, torch.nn.LayerNorm, torch.nn.GroupNorm, torch.nn.Dropout)):
+                    excluded_layers.append(name)
+                    continue
+            
+            parameters_to_prune.append((module, 'weight'))
+    
+    print(f"Pruning {len(parameters_to_prune)} layers")
+    # for name, module in parameters_to_prune:
+    #     print(f"  - {name}.{module}")
+    print(f"Excluded {len(excluded_layers)} critical layers")
+    # for layer in excluded_layers:
+    #     print(f"  - {layer}")
+    
+    prune.global_unstructured(
+        parameters_to_prune,
+        pruning_method=prune.L1Unstructured,
+        amount=pruning_ratio,
+    )
+    
+    return model
 
 def train_and_validate(train_loader, val_loader, 
                        model, criterion, metric, 
@@ -245,6 +278,7 @@ def main(cfg: DictConfig):
         num_labels=cfg.dataset.num_classes,
         model_cfg=cfg.model
     )
+    apply_global_pruning(model, pruning_ratio=0.3, exclude_layers=True)
     model = model.to(device)
     criterion = CombinedLoss(alpha=0.8, ignore_index=255)
     optimizer = optim.Adam(model.parameters(), lr=cfg.train.learning_rate)
@@ -257,17 +291,14 @@ def main(cfg: DictConfig):
         ignore_index=255
     ).to(device)
 
-    # Initialize learning rate scheduler
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.train.num_epochs)
-
     # Load the best model if it exists
-    start_epoch = load_checkpoint(model, optimizer, cfg.checkpoint, scheduler)
+    start_epoch = load_checkpoint(model, optimizer, cfg.checkpoint)
 
     train_and_validate(
         train_loader, val_loader, 
         model, criterion, miou_metric,
-        optimizer, scheduler, 
-        cfg, start_epoch,
+        optimizer, cfg, 
+        start_epoch=start_epoch,
         device=device
     )
 
@@ -277,5 +308,5 @@ if __name__ == "__main__":
         config_path=f"../configs", 
         job_name="train_and_log"
     ):
-        cfg = compose(config_name="config")
+        cfg = compose(config_name="prune_config")
         main(cfg)

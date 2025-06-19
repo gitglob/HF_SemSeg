@@ -1,0 +1,36 @@
+wandb:
+    enabled: False
+    project: "HF_SemSeg"
+    run_name: ${checkpoint.model_name}
+
+dataset:
+    root: "/home/panos/Documents/data/kitti-360"
+    H: 375
+    W: 1242
+    num_workers: 4
+    num_classes: 33
+
+augmentation:
+    crop_height: 364
+    crop_width: 1232
+
+train:
+    epoch_size: 200
+    accum_steps: 16
+    batch_size: 4
+    learning_rate: 1e-3
+    num_epochs: 20
+
+model:
+    backbone: "facebook/dinov2-base"  # small | base | large
+    freeze_backbone: True
+    patch_size: 14
+    decoder_channels: 256
+    deepsup_layers: [3, 6, 9, 12]
+
+checkpoint:
+    model_name: "pruned"
+    comment: "unstructured pruning"
+
+visualization:
+    attention: False
