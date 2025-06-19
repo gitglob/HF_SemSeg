@@ -28,6 +28,11 @@ from src.train import train_and_validate
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
+"""
+Starting from a 30% pruned model with 26% mIoU, we get to 72% after 7 epochs of training.
+"""
+
+
 def apply_global_pruning(model, pruning_ratio=0.3, exclude_layers=True):
     """Global pruning with critical layer protection"""
     
@@ -151,13 +156,14 @@ def main(cfg: DictConfig):
     ).to(device)
 
     # Load the best model if it exists
-    start_epoch = load_checkpoint(model, optimizer, cfg.checkpoint)
+    start_epoch, best_val_miou = load_checkpoint(model, optimizer, cfg.checkpoint)
 
     train_and_validate(
         train_loader, val_loader, 
         model, criterion, miou_metric,
         optimizer, cfg, 
         start_epoch=start_epoch,
+        best_val_miou=best_val_miou,
         device=device
     )
 

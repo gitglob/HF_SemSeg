@@ -31,6 +31,7 @@ def train_and_validate(train_loader, val_loader,
                        optimizer, cfg, 
                        scheduler = None, 
                        start_epoch=1, 
+                       best_val_miou=0.0,
                        device="cuda"):
     print(f"Starting training from epoch {start_epoch} until {cfg.train.num_epochs}")
     print(f"Using batch size {cfg.train.batch_size} with {cfg.train.accum_steps} accumulation steps...")
@@ -267,13 +268,15 @@ def main(cfg: DictConfig):
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.train.num_epochs)
 
     # Load the best model if it exists
-    start_epoch = load_checkpoint(model, optimizer, cfg.checkpoint, scheduler)
+    start_epoch, best_val_miou = load_checkpoint(model, optimizer, cfg.checkpoint, scheduler)
 
     train_and_validate(
         train_loader, val_loader, 
         model, criterion, miou_metric,
         optimizer, scheduler, 
-        cfg, start_epoch,
+        cfg, 
+        start_epoch=start_epoch, 
+        best_val_miou=best_val_miou,
         device=device
     )
 
