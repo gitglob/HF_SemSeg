@@ -29,17 +29,21 @@ print(f"Using device: {device}")
 def train_and_validate(train_loader, val_loader, 
                        model, criterion, metric, 
                        optimizer, cfg, 
-                       scheduler = None, start_epoch=1, 
+                       scheduler = None, 
+                       start_epoch=1, 
                        device="cuda"):
+    print(f"Starting training from epoch {start_epoch} until {cfg.train.num_epochs}")
+    print(f"Using batch size {cfg.train.batch_size} with {cfg.train.accum_steps} accumulation steps...")
     for epoch in range(start_epoch, cfg.train.num_epochs + 1):
         ####### TRAINING #######
         model.train()
         metric.reset()
+        optimizer.zero_grad()
         running_train_loss = 0.0
 
         # Iterate over the training dataset
         train_bar = tqdm(train_loader, desc=f"[Epoch {epoch}] Train")
-        for batch_idx, (imgs, masks) in enumerate(train_bar, start=1):
+        for batch_idx, (imgs, masks) in enumerate(train_bar):
             imgs = imgs.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
             input = model.process(imgs).to(device)
 
@@ -54,23 +58,25 @@ def train_and_validate(train_loader, val_loader,
             loss = criterion(logits, masks.long())
 
             # scale the loss down so that gradients accumulate correctly
-            loss = loss / cfg.train.accum_steps
+            (loss / cfg.train.accum_steps).backward()
 
             # compute IoU
             preds = torch.argmax(logits, dim=1)  # [B, H, W]
             metric.update(preds, masks)
 
-            # Compute gradients and step the optimizer
-            loss.backward()
+            # Step every accum_steps or at the end of epoch
+            is_accum_step = (batch_idx + 1) % cfg.train.accum_steps == 0
+            is_last_batch = batch_idx == len(train_loader) - 1
 
             # every accum_steps, step & zero_grad
-            if batch_idx % cfg.train.accum_steps == 0:
+            if is_accum_step or is_last_batch:
                 optimizer.step()
                 optimizer.zero_grad()
 
             # accumulate losses
             running_train_loss += loss.item()
-            train_bar.set_postfix(loss=running_train_loss / batch_idx)
+
+            train_bar.set_postfix(loss=running_train_loss / (batch_idx + 1))
 
         avg_train_loss = running_train_loss / len(train_loader)
         avg_train_miou = metric.compute().item()
@@ -87,7 +93,7 @@ def train_and_validate(train_loader, val_loader,
 
         with torch.no_grad():
             val_bar = tqdm(val_loader, desc=f"[Epoch {epoch}/{cfg.train.num_epochs}]  Val")
-            for batch_idx, (imgs, masks) in enumerate(val_bar, start=1):
+            for batch_idx, (imgs, masks) in enumerate(val_bar):
                 imgs = imgs.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
                 input = model.process(imgs).to(device)
 
@@ -115,7 +121,7 @@ def train_and_validate(train_loader, val_loader,
                     all_targets.extend(targets_np[valid_idx].tolist())
 
                 # Log plots for the first batch
-                if batch_idx == 1 and cfg.wandb.enabled:
+                if batch_idx == 0 and cfg.wandb.enabled:
                     plot_image_and_masks(
                         imgs[0].permute(1, 2, 0).cpu().numpy(),  # Original image
                         masks[0].cpu().numpy(),                  # Ground truth
@@ -127,7 +133,7 @@ def train_and_validate(train_loader, val_loader,
                         del attentions
                         torch.cuda.empty_cache()
 
-                val_bar.set_postfix(val_loss=running_val_loss / batch_idx)
+                val_bar.set_postfix(val_loss=running_val_loss / (batch_idx + 1))
 
         avg_val_loss = running_val_loss / len(val_loader)
         avg_val_miou = metric.compute().item()

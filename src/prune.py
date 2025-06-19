@@ -23,6 +23,7 @@ from data.dataset import KittiSemSegDataset
 from data.labels_kitti360 import trainId2label, NUM_CLASSES
 from utils.visualization import plot_image_and_masks
 from utils.others import save_checkpoint, load_checkpoint
+from src.train import train_and_validate
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
@@ -58,150 +59,6 @@ def apply_global_pruning(model, pruning_ratio=0.3, exclude_layers=True):
     )
     
     return model
-
-def train_and_validate(train_loader, val_loader, 
-                       model, criterion, metric, 
-                       optimizer, cfg, 
-                       scheduler = None, start_epoch=1, 
-                       device="cuda"):
-    for epoch in range(start_epoch, cfg.train.num_epochs + 1):
-        ####### TRAINING #######
-        model.train()
-        metric.reset()
-        running_train_loss = 0.0
-
-        # Iterate over the training dataset
-        train_bar = tqdm(train_loader, desc=f"[Epoch {epoch}] Train")
-        for batch_idx, (imgs, masks) in enumerate(train_bar, start=1):
-            imgs = imgs.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
-            input = model.process(imgs).to(device)
-
-            # Zero the gradients
-            optimizer.zero_grad()
-
-            # forward
-            logits = model(input)
-
-            # loss
-            masks = masks.to(device)  # [B, H, W]
-            loss = criterion(logits, masks.long())
-
-            # scale the loss down so that gradients accumulate correctly
-            loss = loss / cfg.train.accum_steps
-
-            # compute IoU
-            preds = torch.argmax(logits, dim=1)  # [B, H, W]
-            metric.update(preds, masks)
-
-            # Compute gradients and step the optimizer
-            loss.backward()
-
-            # every accum_steps, step & zero_grad
-            if batch_idx % cfg.train.accum_steps == 0:
-                optimizer.step()
-                optimizer.zero_grad()
-
-            # accumulate losses
-            running_train_loss += loss.item()
-            train_bar.set_postfix(loss=running_train_loss / batch_idx)
-
-        avg_train_loss = running_train_loss / len(train_loader)
-        avg_train_miou = metric.compute().item()
-
-        ####### VALIDATION #######
-        model.eval()
-        running_val_loss = 0.0
-        metric.reset()
-
-        # Prepare lists for storing predictions and targets for confusion matrix
-        if cfg.wandb.enabled:
-            all_preds = []
-            all_targets = []
-
-        with torch.no_grad():
-            val_bar = tqdm(val_loader, desc=f"[Epoch {epoch}/{cfg.train.num_epochs}]  Val")
-            for batch_idx, (imgs, masks) in enumerate(val_bar, start=1):
-                imgs = imgs.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
-                input = model.process(imgs).to(device)
-
-                # forward + loss
-                logits = model(input)
-                cls_map = None
-
-                # Loss
-                masks = masks.to(device)  # [B, H, W]
-                loss = criterion(logits, masks.long())
-
-                # accumulate losses
-                running_val_loss += loss.item()
-
-                # compute IoU on this batch
-                preds = torch.argmax(logits, dim=1)  # [B, H, W]
-                metric.update(preds, masks)
-
-                # Store predictions and targets for confusion matrix
-                if cfg.wandb.enabled:
-                    preds_np   = preds.view(-1).cpu().numpy()
-                    targets_np = masks.view(-1).cpu().numpy()
-                    valid_idx  = targets_np != 255       # drop ignore_index
-                    all_preds.extend(preds_np[valid_idx].tolist())
-                    all_targets.extend(targets_np[valid_idx].tolist())
-
-                # Log plots for the first batch
-                if batch_idx == 1 and cfg.wandb.enabled:
-                    plot_image_and_masks(
-                        imgs[0].permute(1, 2, 0).cpu().numpy(),  # Original image
-                        masks[0].cpu().numpy(),                  # Ground truth
-                        preds[0].cpu().numpy(),                  # Predicted segmentation
-                        cls_map,                                 # Attention map
-                        epoch, cfg.dataset.num_classes
-                    )
-                    if cfg.visualization.attention:
-                        del attentions
-                        torch.cuda.empty_cache()
-
-                val_bar.set_postfix(val_loss=running_val_loss / batch_idx)
-
-        avg_val_loss = running_val_loss / len(val_loader)
-        avg_val_miou = metric.compute().item()
-
-        # Update learning rate based on validation loss
-        if scheduler is not None:
-            scheduler.step()
-
-        ####### LOG TO W&B #######
-        if cfg.wandb.enabled:
-            # Log confusion matrix
-            class_names = [trainId2label[i].name for i in range(NUM_CLASSES)]
-            confmat = wandb.plot.confusion_matrix(
-                probs=None,
-                y_true=all_targets,
-                preds=all_preds,
-                class_names=class_names
-            )
-
-            # Log metrics
-            wandb.log({
-                "Train Loss": avg_train_loss,
-                "Train mIoU": avg_train_miou,
-                "Epoch": epoch,
-                "Validation Loss": avg_val_loss,
-                "Validation mIoU": avg_val_miou,
-                "Learning Rate": optimizer.param_groups[0]['lr'],
-                "Validation Confusion Matrix": confmat
-            })
-
-        ####### PRINT & CHECKPOINT #######
-        print(
-            f"Epoch {epoch:02d} | Learning Rate: {optimizer.param_groups[0]['lr']:.6f} | "
-            f"\n  Train Loss: {avg_train_loss:.4f} | mIoU: {avg_train_miou:.4f} "
-            f"\n  Val   Loss: {avg_val_loss:.4f} | mIoU: {avg_val_miou:.4f}"
-        )
-
-        # Save best model
-        if avg_val_miou > best_val_miou:
-            best_val_miou = avg_val_miou
-            save_checkpoint(model, optimizer, epoch, best_val_miou, cfg.checkpoint, scheduler)
 
 def main(cfg: DictConfig):
     if cfg.wandb.enabled:
@@ -279,6 +136,8 @@ def main(cfg: DictConfig):
         model_cfg=cfg.model
     )
     apply_global_pruning(model, pruning_ratio=0.3, exclude_layers=True)
+    if not any(p.requires_grad for p in model.backbone.parameters()):
+        print("Backbone is frozen.")
     model = model.to(device)
     criterion = CombinedLoss(alpha=0.8, ignore_index=255)
     optimizer = optim.Adam(model.parameters(), lr=cfg.train.learning_rate)
