@@ -1,0 +1,48 @@
+wandb:
+    enabled: True
+    project: "HF_SemSeg"
+    run_name: ${checkpoint.model_name}
+
+dataset:
+    root: "/home/panos/Documents/data/kitti-360"
+    H: 375
+    W: 1242
+    num_workers: 4
+    num_classes: 33
+
+augmentation:
+    crop_height: 364
+    crop_width: 1232
+
+train:
+    epoch_size: 200
+    accum_steps: 32
+    batch_size: 2
+    learning_rate: 1e-3
+    num_epochs: 20
+
+distill:
+  alpha: 0.5          # weight on CE vs. KD
+  temperature: 4.0    # higher → softer targets
+
+model:
+  teacher:
+      backbone: "facebook/dinov2-base"  # small | base | large
+      freeze_backbone: True
+      patch_size: 14
+      proj_channels: 256
+      deepsup_layers: [3, 6, 9, 12]
+  student:
+      backbone: "facebook/dinov2-base"  # small | base | large
+      encoder_layers: [0, 6, 11]
+      freeze_backbone: False
+      patch_size: 14
+      proj_channels: 256
+      deepsup_layers: [0, 1, 2, 3]
+
+checkpoint:
+    model_name: "student-response"
+    comment: "base model, frozen backbone, fpn head, cropped input"
+
+visualization:
+    attention: False
