@@ -22,8 +22,10 @@ train:
     num_epochs: 20
 
 distill:
-  alpha: 0.5          # weight on CE vs. KD
-  temperature: 4.0    # higher → softer targets
+  alpha: 0.5        # loss weight
+  beta: 0.25        # output loss weight (distillation)
+  gamma: 0.25       # attention (feature) loss weight (distillation)
+  temperature: 4.0  # higher → softer targets
 
 model:
   teacher:
@@ -41,7 +43,7 @@ model:
       deepsup_layers: [0, 1, 2, 3]
 
 checkpoint:
-    model_name: "student-response"
+    model_name: "student-feature"
     comment: "base model, frozen backbone, fpn head, cropped input"
 
 visualization:

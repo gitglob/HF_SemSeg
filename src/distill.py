@@ -18,11 +18,8 @@ cur_dir     = Path(__file__).parent
 project_dir = cur_dir.parent
 sys.path.append(str(project_dir))
 
-from models.teacher import Teacher
-from models.student import Student
-from models.tools import CombinedLoss
-from src.validate import evaluate_model
-from src.train import train_and_validate
+from models.teacher1 import Teacher
+from models.student1 import Student
 from data.dataset import KittiSemSegDataset
 from utils.others import save_checkpoint, load_checkpoint, get_memory_footprint
 from data.labels_kitti360 import trainId2label, NUM_CLASSES
@@ -32,6 +29,47 @@ from utils.others import save_checkpoint, load_checkpoint
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
+
+class ALPLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.mse = nn.MSELoss()
+
+    def forward(self, student_feats, teacher_feats):
+        """
+        student_feats: list of 4 maps [B, Ds, Hf, Wf]
+        teacher_feats: list of 13 maps [B, Dt, Hf, Wf]
+
+        Note: Ds and Dt are equal, but in theory they can differ.
+              If they do, I need to add a 1×1 conv to the student features to project them to the same dimension.
+        """
+        B, _, Hf, Wf = student_feats[0].shape
+
+        # 1) pool each map to a vector
+        S = torch.stack([f.flatten(2).mean(-1) for f in student_feats], dim=0) # [4, B, Ds]
+        T = torch.stack([f.flatten(2).mean(-1) for f in teacher_feats], dim=0) # [13, B, Dt]
+
+        loss = 0.0
+        # for each of the 4 student layers
+        for j in range(S.shape[0]):
+            # 2) dot‐product attention scores over the 13 teacher vectors
+            # a basically tells us how much attention to pay to each of the 13 teacher feature maps
+            e = torch.einsum('bd,kbd->bk', S[j], T)  # [B, 13]
+            a = F.softmax(e, dim=1)                  # [B, 13]
+
+            # 3) form the weighted sum C_j
+            # Explanation a: Cj[b, d] = sum over k of a[b, k] * T[k, b, d] — i.e. each Cj[b] is the attention-weighted teacher vector
+            # Explanation b: Cj is the single teacher feature for student layer j, made by mixing all 13 teacher features
+            #                according to how much attention (a) each teacher layer gets
+            Cj = torch.einsum('bk,kbd->bd', a, T)    # [B, Dt]
+
+            # 4) expand back to the teacher feature map size
+            Cj_map = Cj.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, Hf, Wf) # [B, Dt, Hf, Wf]
+
+            # 5) MSE between student map and its projected teacher map
+            loss += self.mse(student_feats[j], Cj_map)
+
+        return loss
 
 def train_and_distill(train_loader, val_loader, 
                        teacher, student, 
@@ -45,8 +83,11 @@ def train_and_distill(train_loader, val_loader,
     print(f"Starting training from epoch {start_epoch} until {cfg.train.num_epochs}")
     print(f"Using batch size {cfg.train.batch_size} with {cfg.train.accum_steps} accumulation steps...")
 
+    alp_loss = ALPLoss()
     T = cfg.distill.temperature
     alpha = cfg.distill.alpha
+    beta = cfg.distill.beta
+    gamma = cfg.distill.gamma
 
     for epoch in range(start_epoch, cfg.train.num_epochs + 1):
         ####### TRAINING #######
@@ -56,6 +97,7 @@ def train_and_distill(train_loader, val_loader,
         running_train_loss = 0.0
         running_ce_loss = 0.0
         running_kd_loss = 0.0
+        running_alp_loss = 0.0
 
         # Iterate over the training dataset
         train_bar = tqdm(train_loader, desc=f"[Epoch {epoch}] Train")
@@ -65,18 +107,22 @@ def train_and_distill(train_loader, val_loader,
 
             # 1) teacher forward (no grad)
             with torch.no_grad():
-                teacher_logits = teacher(input)
+                teacher_logits, teacher_feats = teacher(input)
 
             # Zero the gradients
             optimizer.zero_grad()
 
             # forward
-            student_logits = student(input)
+            student_logits, student_feats = student(input)
 
             # CE loss on student logits
             masks = masks.to(device)  # [B, H, W]
             ce_loss = criterion(student_logits, masks.long())
             running_ce_loss += ce_loss.item()
+
+            # ALP loss on student and teacher features
+            alp_loss_value = alp_loss(student_feats, teacher_feats)
+            running_alp_loss += alp_loss_value.item()
 
             # KL loss on softened logits
             #    reshape to [B, H*W, C] so softmax is over classes
@@ -85,11 +131,12 @@ def train_and_distill(train_loader, val_loader,
             t = teacher_logits.view(B, C, -1) / T
             log_p_s = F.log_softmax(s, dim=1)
             p_t     = F.softmax(t, dim=1)
-            kd_loss = F.kl_div(log_p_s, p_t, reduction='batchmean') * (T*T)
+            raw_kd_loss = F.kl_div(log_p_s, p_t, reduction='batchmean') * (T*T)
+            kd_loss = raw_kd_loss / (H * W)
             running_kd_loss += kd_loss.item()
 
             # Combine losses
-            loss = alpha * ce_loss + (1 - alpha) * kd_loss
+            loss = alpha * ce_loss + beta * kd_loss + gamma * alp_loss_value
 
             # scale the loss down so that gradients accumulate correctly
             (loss / cfg.train.accum_steps).backward()
@@ -111,10 +158,12 @@ def train_and_distill(train_loader, val_loader,
             train_bar.set_postfix(
                 loss=running_train_loss / (batch_idx + 1),
                 ce_loss=running_ce_loss / (batch_idx + 1),
+                alp_loss=running_alp_loss / (batch_idx + 1),
                 kd_loss=running_kd_loss / (batch_idx + 1),
             )
 
         avg_ce_loss = running_ce_loss / len(train_loader)
+        avg_alp_loss = running_alp_loss / len(train_loader)
         avg_kd_loss = running_kd_loss / len(train_loader)
         avg_train_loss = running_train_loss / len(train_loader)
         avg_train_miou = metric.compute().item()
@@ -195,6 +244,7 @@ def train_and_distill(train_loader, val_loader,
             wandb.log({
                 "Train Loss": avg_train_loss,
                 "Train CE Loss": avg_ce_loss,
+                "Train ALP Loss": avg_alp_loss,
                 "Train KD Loss": avg_kd_loss,
                 "Train mIoU": avg_train_miou,
                 "Epoch": epoch,
