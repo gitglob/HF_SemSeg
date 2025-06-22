@@ -4,6 +4,7 @@ The purpose of this project is to experiment with HuggingFace models and create 
 On top of that, I will try to dive into:
 - Ablation studies, when building the model's head
 - Quantization, Pruning, and Distillation with the aim of reducing the model size and inference time
+- LoRA-tuning for domain adaptation
 - Deployment, using the ONNX format and Docker/FastAPI
 
 # Model
@@ -95,6 +96,36 @@ Conclusions:
 - Pruning using PyTorch is pointless, when you don't have the hardware to support it (GPU with tensor cores), as will not reduce inference time.
 - PyTorch's structured prunning functions don't actually reduce the model size. They just introduce masks to the model weights and/or biases during the forward pass.
 - The biggest problem with pruning, especially when using a huge pretrained network like DinoV2, is that eventually, you will need to retrain it to recover the lost precision. However, that is very expensive and time-consuming. The alternative is to just prune your classifier, which is pointless, since it reflects only around 5% of the total model size/parameters.
+
+# Knowledge Distillation
+
+Response and feature -based knowledge distillation was tried using a student network that is a shallower version of the original one.
+Given that the head accounts for only 4% of the total model size, distillation was only aimed towards the backbone.
+In short, 9 out of the 12 consecutive ViT layers of the backbone were removed, and the model was re-trained from scratch.
+
+In the response-based distillation, a **temperature-scaled KL divergence loss** was used to transfer soft predictions from the teacher to the student. The student learns to mimic the teacher's class probability distributions rather than just hard labels, allowing it to capture the teacher's uncertainty and inter-class relationships.
+
+For feature-based distillation, an **Attention-based Layer Projection (ALP)** loss was implemented to align intermediate representations between teacher and student networks. Since the teacher has 12 transformer layers while the student has only 3, a learnable attention mechanism was used to determine which teacher layers are most relevant for each student layer. For each student feature map, dot-product attention scores are computed across all 13 teacher feature maps, creating a weighted combination that best matches each student's semantic level/layer. The final loss is the MSE between each student feature and its corresponding attention-weighted teacher feature.
+
+The combined distillation loss integrates three components:
+- **Cross-entropy loss** (α=0.5) for ground truth supervision  
+- **KL divergence loss** (β=0.25) for response distillation
+- **ALP feature loss** (γ=0.25) for intermediate feature alignment
+
+In theory, this multi-level knowledge transfer approach should enable the student to learn both high-level semantic understanding from soft predictions and low-level feature representations from intermediate layers, achieving effective compression while maintaining segmentation quality. The performance of the loss function acroos the 2 runs can be seen in the following pictures.
+
+| Loss Component | Training Progress |
+|---------------|-------------------|
+| **Overall Training Loss** | **Cross-Entropy Loss** |
+| ![Training Loss](assets/distillation/train_loss.png) | ![CE Loss](assets/distillation/train_ce_loss.png) |
+| **KL Divergence Loss** | **Attention Layer Projection Loss** |
+| ![KD Loss](assets/distillation/train_kd_loss.png) | ![ALP Loss](assets/distillation/train_alp_loss.png) |
+
+
+Unfortunately but somewhat expectedly, the mIoU performance degraded by roughly 30%, which is a lot.
+That said, the training was stopped early and I did not perform hyperparameter tuning, which makes it safe to assume that I could get another 15% in validation mIoU gains.
+
+![Distillation](assets/distillation/val_miou.png)
 
 # Setup
 

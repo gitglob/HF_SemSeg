@@ -185,7 +185,7 @@ def train_and_distill(train_loader, val_loader,
                 input = student.process(imgs).to(device)
 
                 # forward + loss
-                logits = student(input)
+                logits, _ = student(input)
                 cls_map = None
 
                 # Loss
@@ -257,7 +257,7 @@ def train_and_distill(train_loader, val_loader,
         ####### PRINT & CHECKPOINT #######
         print(
             f"Epoch {epoch:02d} | Learning Rate: {optimizer.param_groups[0]['lr']:.6f} | "
-            f"\n  Train CE Loss: {avg_ce_loss:.4f} | Train KD Loss: {avg_kd_loss:.4f} "
+            f"\n  Train CE Loss: {avg_ce_loss:.4f} | Train KD Loss: {avg_kd_loss:.4f} | Train ALP Loss: {avg_alp_loss:.4f} "
             f"\n  Train Loss: {avg_train_loss:.4f} | mIoU: {avg_train_miou:.4f} "
             f"\n  Val   Loss: {avg_val_loss:.4f} | mIoU: {avg_val_miou:.4f}"
         )
@@ -349,6 +349,9 @@ def main(cfg: DictConfig):
     teacher.load_state_dict(checkpoint["model_state_dict"])
     print(f"Loaded FP32 weights from {ckpt_path} into teacher.")
 
+    # Load the best model if it exists
+    start_epoch, best_val_miou = load_checkpoint(student, optimizer, cfg.checkpoint)
+
     # Loss and Metric
     criterion = nn.CrossEntropyLoss(ignore_index=255)
     optimizer = optim.Adam(student.parameters(), lr=cfg.train.learning_rate)
@@ -371,7 +374,9 @@ def main(cfg: DictConfig):
     train_and_distill(train_loader, val_loader, 
                       teacher, student, 
                       criterion, miou_metric, 
-                      optimizer, cfg)
+                      optimizer, cfg,
+                      start_epoch=start_epoch,
+                      best_val_miou=best_val_miou)
 
 
 if __name__ == "__main__":
