@@ -125,8 +125,19 @@ class Teacher(nn.Module):
 
         # backbone → [B, 1+N, C] and attention maps
         out = self.backbone(images, output_hidden_states=True)
-        hstates = out.hidden_states # [13] [B, 1+N, D]
+        hstates = out.hidden_states # [13] [B, 1+N, C]
         taps = [hstates[i] for i in self.layer_idxs]
+        # print(f"Teacher: {len(taps)} layers tapped, each with shape {taps[0].shape}")
+
+        # turn each [B,1+N,C] → [B, C, Hf, Wf]
+        feats = []
+        Hf = H_orig // self.patch_size
+        Wf = W_orig // self.patch_size
+        for hs in hstates:
+            x = hs[:,1:]                          # drop cls token → [B, N-1, C]
+            x = x.transpose(1,2).view(B, -1, Hf, Wf)
+            feats.append(x)                       # list of 12 maps [B, D, Hf, Wf]
+        # print(f"Teacher: {len(feats)} feature maps, each with shape {feats[0].shape}")
 
         # Upsample and classify
         logits_low = self.head(taps, (H_orig, W_orig)) # [B, num_classes, h, w]
@@ -137,7 +148,7 @@ class Teacher(nn.Module):
             align_corners=False
         )
 
-        return logits
+        return logits, feats
 
     def load_pretrained_weights(self, weight_path):
         self.load_state_dict(torch.load(weight_path, map_location='cpu'))
@@ -168,7 +179,7 @@ def main(cfg):
         print(f"Input  shape: {tuple(images.shape)}, type: {images.dtype}, (min, max): ({images.min()}, {images.max()})")
         print(f"Processed shape: {tuple(images_processed.shape)}, type: {images_processed.dtype}, (min, max): ({images_processed.min()}, {images_processed.max()})")
 
-        logits = model(images)
+        logits, features = model(images)
         preds = logits.argmax(dim=1)
 
     print("~~~~~Output Shapes~~~~~")

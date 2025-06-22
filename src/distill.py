@@ -18,8 +18,8 @@ cur_dir     = Path(__file__).parent
 project_dir = cur_dir.parent
 sys.path.append(str(project_dir))
 
-from models.teacher1 import Teacher
-from models.student1 import Student
+from models.teacher import Teacher
+from models.student import Student
 from data.dataset import KittiSemSegDataset
 from utils.others import save_checkpoint, load_checkpoint, get_memory_footprint
 from data.labels_kitti360 import trainId2label, NUM_CLASSES
