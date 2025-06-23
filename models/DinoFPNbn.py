@@ -112,19 +112,50 @@ class DinoFPN(nn.Module):
         # Preprocess the images
         processed_images = self.processor(images, return_tensors="pt").pixel_values
         return processed_images
-
-    def forward(self, images):
+    
+    def _parse_input(self, input_ids=None, pixel_values=None, **kwargs):
         """
+        Parse input to get the tensor for the forward pass.
+        
+        Args:
+            input_ids: For compatibility with PEFT (contains the processed tensor)
+            pixel_values: Alternative HuggingFace-style input name
+            **kwargs: Additional arguments
+        
+        Returns:
+            The tensor to be processed by the model
+        """
+        if input_ids is not None:
+            return input_ids
+        elif pixel_values is not None:
+            return pixel_values
+        else:
+            # Fallback - look for tensor in kwargs or raise error
+            for key, value in kwargs.items():
+                if isinstance(value, torch.Tensor) and value.dim() == 4:
+                    return value
+            raise ValueError("No valid input tensor found. Expected 'input_ids', 'pixel_values', or a 4D tensor.")
+
+    def forward(self, input_ids=None, pixel_values=None, **kwargs):
+        """
+        Forward method compatible with both direct tensor input and HuggingFace-style kwargs
+        
         B: batch size
         N: number of feature tokens
         C: hidden dimension
         H: height of the image
         W: width of the image
+        
+        Args:
+            input_ids: For compatibility with PEFT (contains the processed tensor)
+            pixel_values: Alternative HuggingFace-style input name
+            **kwargs: Additional arguments
         """
-        B, _, H_orig, W_orig = images.shape
+        x = self._parse_input(input_ids, pixel_values, **kwargs)        
+        B, _, H_orig, W_orig = x.shape
 
         # backbone → [B, 1+N, C] and attention maps
-        out = self.backbone(images, output_hidden_states=True)
+        out = self.backbone(x, output_hidden_states=True)
         hstates = out.hidden_states # [13] [B, 1+N, D]
         taps = [hstates[i] for i in self.layer_idxs]
 

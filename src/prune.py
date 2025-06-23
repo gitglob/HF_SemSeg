@@ -19,8 +19,8 @@ sys.path.append(str(project_dir))
 
 from models.DinoFPNbn import DinoFPN
 from models.tools import CombinedLoss
-from data.dataset import KittiSemSegDataset
-from data.labels_kitti360 import trainId2label, NUM_CLASSES
+from data.kitti360.dataset import KittiSemSegDataset
+from data.kitti360.labels_kitti360 import trainId2label, NUM_CLASSES
 from utils.visualization import plot_image_and_masks
 from utils.others import save_checkpoint, load_checkpoint
 from src.train import train_and_validate

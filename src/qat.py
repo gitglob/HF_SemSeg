@@ -29,8 +29,8 @@ project_dir = cur_dir.parent
 sys.path.append(str(project_dir))
 
 from models.DinoFPNbn import DinoFPN
-from data.dataset import KittiSemSegDataset
-from data.labels_kitti360 import NUM_CLASSES
+from data.kitti360.dataset import KittiSemSegDataset
+from data.kitti360.labels_kitti360 import NUM_CLASSES
 from utils.others import get_memory_footprint, get_quant_memory_footprint
 
 # ────────────────────────────────────────────────────────────────────────────────

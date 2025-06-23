@@ -15,7 +15,7 @@ project_root = os.path.dirname(cur_dir)
 sys.path.append(str(project_root))
 
 from models.DinoFPN import DinoFPN
-from data.dataset import KittiSemSegDataset
+from data.kitti360.dataset import KittiSemSegDataset
 
 # Device configuration
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

@@ -127,6 +127,36 @@ That said, the training was stopped early and I did not perform hyperparameter t
 
 ![Distillation](assets/distillation/val_miou.png)
 
+# Fine-tuning | LoRA
+
+To test LoRA-tuning for Domain Adaptation, I used the ![MaSTr1325](https://www.vicos.si/resources/mastr1325/) maritime segmentation dataset.
+I contains ~1300 simply annotated images from a ship's surroundings, which were split into 80/20 train/validation sets.
+
+Given that this new dataset is much simpler than the original one, and that the DinoV2 backbone is already a general-purpose feature extractor, the only fair comparison would be the lora-tuned model (full / head-only) vs the classically (freeze all layers, finetune only the Head / Classifier (last linear layer)) fine-tuned original model.
+
+Using a simple LoRA configuration with rank=8, alpha=32, dropout=0.1, I achieved the following results:
+
+| Method | # Epochs | Time (min) | Val mIoU (%) | Parameters Fine-tuned | % of Total Parameters |
+|--------|----------|------------|--------------|-----------------------|-----------------------|
+| Head Fine-tuning       | 2  | 7  | 95.77 | 3,740,164 | 4.14  |
+| Classifier Fine-tuning | 20 | 60 | 94.75 | 1,028     | 0     |
+| LoRA Full Fine-tuning  | 2  | 15 | 94.99 | 719,876   | 0.79  |
+| LoRA Head Fine-tuning  | 2  | 7  | 95.31 | 130,052   | 0.14  |
+
+![LoRA-tune](assets/lora/val_miou.png)
+
+Though probably not to a statistically insignificant extend, it seems that full head fine-tuning might do a little better job at predicting the *unknown* class, compared to lora-tuning. 
+
+| Method | Prediction Result |
+|--------|-------------------|
+| **Classic Head Fine-tuning** | ![Classic Fine-tuning Result](assets/lora/finetune-epoch2.png) |
+| **LoRA Head Fine-tuning** | ![LoRA Fine-tuning Result](assets/lora/loratune-epoch2.png) |
+
+In summary, LoRA-tuning achieves an identical or greater validation mIoU in a way shorter time, compared to classical fine-tuning.
+It is important to note that the Maritime Dataset is WAY simpler than the original one, so not a lot of fine-tuning was needed either way.
+More profound differences are expected with a complicated and different enough Domain Adaptation setting.
+On top of that, the DinoV2 features seem to be better off when frozen, probably because the new Dataset is not too "special", compared to the vast dataset the backbone was originally trained upon. 
+
 # Setup
 
 Everything was executed on a **NVIDIA GeForce GTX 1650 Ti Mobile** GPU with 4GB size.

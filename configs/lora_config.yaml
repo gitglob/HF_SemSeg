@@ -1,0 +1,53 @@
+wandb:
+    enabled: True
+    project: "HF_SemSeg"
+    run_name: ${checkpoint.model_name}
+
+dataset:
+  debug: False
+  num_workers: 4
+  mastr1325:
+    root: "/home/panos/Documents/data/mastr1325"
+    H: 384
+    W: 512
+    num_classes: 4
+  kitti360:
+    root: "/home/panos/Documents/data/kitti360"
+    H: 375
+    W: 1242
+    num_classes: 33
+
+augmentation:
+    crop_height: 378
+    crop_width: 504
+
+train:
+    epoch_size: 200
+    accum_steps: 4
+    batch_size: 8
+    learning_rate: 1e-3
+    num_epochs: 20
+
+lora:
+  enabled: True
+  head: True
+  backbone: False
+  rank: 8
+  alpha: 32
+  dropout: 0.1
+
+model:
+  backbone: "facebook/dinov2-base"  # small | base | large
+  freeze_backbone: True
+  freeze_head: False
+  patch_size: 14
+  proj_channels: 256
+  deepsup_layers: [3, 6, 9, 12]
+
+checkpoint:
+  base_model_name: "dino-fpn-bn"
+  model_name: "loratune-head"
+  comment: "base model, lora, mastr1325, 4 classes"
+
+visualization:
+    attention: False

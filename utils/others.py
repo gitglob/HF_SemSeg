@@ -1,5 +1,6 @@
 import os
 import torch
+from omegaconf import OmegaConf
 import torch.nn.functional as F
 
 
@@ -100,14 +101,15 @@ def get_cls_attention_map(attentions, H, W, patch_size):
 
     return cls_map
 
-def save_checkpoint(model, optimizer, epoch, best_val_miou, checkpoint_cfg, save_path=None, scheduler=None):
+def save_checkpoint(model, optimizer, epoch, best_val_miou, cfg, save_path=None, scheduler=None):
     """Save model, optimizer, epoch, and best_val_miou to a checkpoint."""
-    checkpoint_path = save_path if save_path else f"checkpoints/" + checkpoint_cfg.model_name + ".pth"
+    checkpoint_path = save_path if save_path else f"checkpoints/" + cfg.checkpoint.model_name + ".pth"
     checkpoint_data = {
-        "model_name": checkpoint_cfg.model_name,
-        "comment": checkpoint_cfg.comment,
+        "model_name": cfg.checkpoint.model_name,
+        "comment": cfg.checkpoint.comment,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
+        'lora_config': OmegaConf.to_container(cfg.lora, resolve=True),
         "epoch": epoch,
         "best_val_miou": best_val_miou
     }
