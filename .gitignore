@@ -27,12 +27,12 @@ tmp
 kitti
 
 # Redirected terminal output
-*.txt
+a.txt
 
 # logs
 logs
 
-# Wabdb
+# WandB
 wandb
 
 
